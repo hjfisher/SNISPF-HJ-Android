@@ -20,22 +20,21 @@ _log_lock     = threading.Lock()
 _status       = "stopped"
 
 _stats = {
-    "active_connections":  0,
-    "total_connections":   0,
-    "pool_active_slots":   0,
-    "probed_stable":       0,
-    "probed_weak":         0,
-    "probed_dead":         0,
-    "probed_total":        0,
-    # discovery
-    "pairs_total":         0,   # grows as IPDiscovery injects new IPs
-    "pairs_probed":        0,
-    "pairs_unprobed":      0,
-    "discovery_done":      0,
-    # ip_discovery
-    "dynamic_ips_found":   0,
-    "dynamic_ip_discovery": 0,  # 1 if feature is enabled
-    "uptime_seconds":      0,
+    "active_connections":   0,
+    "total_connections":    0,
+    "pool_active_slots":    0,
+    "pool_draining":        0,   # pairs draining (still serving old conns)
+    "probed_stable":        0,
+    "probed_weak":          0,
+    "probed_dead":          0,
+    "probed_total":         0,
+    "pairs_total":          0,
+    "pairs_probed":         0,
+    "pairs_unprobed":       0,
+    "discovery_done":       0,
+    "dynamic_ips_found":    0,
+    "dynamic_ip_discovery": 0,
+    "uptime_seconds":       0,
 }
 _stats_lock = threading.Lock()
 _start_time = None
@@ -90,36 +89,39 @@ def _snapshot():
         all_pairs   = list(ex.stats.values())
         pairs_total = len(all_pairs)
 
-        probed  = [p for p in all_pairs if p.probed]
-        stable  = [p for p in probed if p.alive and p.combined_loss_rate < ex.loss_threshold]
-        weak    = [p for p in probed if p.alive and p.combined_loss_rate >= ex.loss_threshold]
-        dead    = [p for p in probed if not p.alive]
+        probed = [p for p in all_pairs if p.probed]
+        stable = [p for p in probed if p.alive and p.combined_loss_rate < ex.loss_threshold]
+        weak   = [p for p in probed if p.alive and p.combined_loss_rate >= ex.loss_threshold]
+        dead   = [p for p in probed if not p.alive]
 
-        active_pool  = pool._pool if hasattr(pool, "_pool") else []
-        active_conns = sum(p.active_connections for p in active_pool)
-        total_conns  = sum(p.total_connections  for p in all_pairs)
+        # active_connections = _pool + _draining (draining pairs still serve live conns)
+        active_pool     = pool._pool     if hasattr(pool, "_pool")     else []
+        draining_pool   = pool._draining if hasattr(pool, "_draining") else []
+        serving_pairs   = active_pool + draining_pool
+        active_conns    = sum(p.active_connections for p in serving_pairs)
+        total_conns     = sum(p.total_connections  for p in all_pairs)
 
         pairs_probed   = len(probed)
         pairs_unprobed = pairs_total - pairs_probed
 
-        # IPDiscovery stats
         dynamic_count = 0
         if _ip_discovery is not None:
             dynamic_count = _ip_discovery.dynamic_ip_count
 
         with _stats_lock:
-            _stats["pool_active_slots"]   = len(active_pool)
-            _stats["active_connections"]  = active_conns
-            _stats["total_connections"]   = total_conns
-            _stats["probed_stable"]       = len(stable)
-            _stats["probed_weak"]         = len(weak)
-            _stats["probed_dead"]         = len(dead)
-            _stats["probed_total"]        = pairs_probed
-            _stats["pairs_total"]         = pairs_total   # grows with discovery!
-            _stats["pairs_probed"]        = pairs_probed
-            _stats["pairs_unprobed"]      = pairs_unprobed
-            _stats["discovery_done"]      = 1 if pairs_unprobed == 0 else 0
-            _stats["dynamic_ips_found"]   = dynamic_count
+            _stats["pool_active_slots"]  = len(active_pool)
+            _stats["pool_draining"]      = len(draining_pool)
+            _stats["active_connections"] = active_conns
+            _stats["total_connections"]  = total_conns
+            _stats["probed_stable"]      = len(stable)
+            _stats["probed_weak"]        = len(weak)
+            _stats["probed_dead"]        = len(dead)
+            _stats["probed_total"]       = pairs_probed
+            _stats["pairs_total"]        = pairs_total
+            _stats["pairs_probed"]       = pairs_probed
+            _stats["pairs_unprobed"]     = pairs_unprobed
+            _stats["discovery_done"]     = 1 if pairs_unprobed == 0 else 0
+            _stats["dynamic_ips_found"]  = dynamic_count
 
     except Exception as e:
         _log(f"[stats] error: {e}")
@@ -204,11 +206,16 @@ def _run_proxy(config_json, use_root_int):
         asyncio.set_event_loop(_loop)
 
         async def _ticker():
+            tick = 0
             while not _stop_event.is_set():
+                # Always update uptime (lightweight)
                 if _start_time:
                     with _stats_lock:
                         _stats["uptime_seconds"] = int(time.monotonic() - _start_time)
-                _snapshot()
+                # Full snapshot every 5 ticks (10s) — reduces CPU in background
+                if tick % 5 == 0:
+                    _snapshot()
+                tick += 1
                 await asyncio.sleep(2)
 
         async def _serve():
