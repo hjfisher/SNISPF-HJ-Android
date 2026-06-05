@@ -1,6 +1,6 @@
 # SNISPF-HJ Android
 
-An Android app that runs [SNISPF-HJ](https://github.com/Rainman69/SNISPF) — a cross-platform SNI spoofing & DPI bypass tool — directly on your phone, with **no Termux, no root required**.
+An Android app that runs [SNISPF-HJ](https://github.com/hjfisher/SNISPF-HJ) — a cross-platform SNI spoofing & DPI bypass tool — directly on your phone, with **no Termux, no root required**.
 
 Powered by [Chaquopy](https://chaquo.com/chaquopy/), the Python engine is bundled inside the APK and managed through a native Jetpack Compose UI.
 
@@ -109,7 +109,7 @@ Chaquopy embeds the Python interpreter and all SNISPF-HJ dependencies directly i
 
 ## Upstream Project
 
-This app is an Android frontend for **[SNISPF-HJ](https://github.com/Rainman69/SNISPF)** by [@Rainman69](https://github.com/Rainman69).
+This app is an Android frontend for **[SNISPF-HJ](https://github.com/hjfisher/SNISPF-HJ)** by [@hjfisher](https://github.com/hjfisher).
 
 SNISPF supports three bypass methods:
 
