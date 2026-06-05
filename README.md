@@ -119,7 +119,7 @@ SNISPF supports three bypass methods:
 | `fake_sni` | Sends a decoy hello with an allowed hostname before the real one |
 | `combined` | Both methods together — strongest option for aggressive DPI |
 
-See the [upstream README](https://github.com/Rainman69/SNISPF#readme) for full configuration options.
+See the [upstream README](https://github.com/hjfisher/SNISPF-HJ#readme) for full configuration options.
 
 ---
 
