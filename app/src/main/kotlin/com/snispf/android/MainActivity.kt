@@ -1,8 +1,13 @@
 package com.snispf.android
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -34,10 +39,39 @@ import com.chaquo.python.android.AndroidPlatform
 import com.chaquo.python.Python
 
 class MainActivity : ComponentActivity() {
+    private lateinit var vm: SnispfViewModel
+
+    private val notifPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* granted or not — service still runs */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Request notification permission (Android 13+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+
         if (!Python.isStarted()) Python.start(AndroidPlatform(this))
-        setContent { SnispfTheme { Surface(Modifier.fillMaxSize()) { SnispfApp() } } }
+
+        setContent {
+            vm = viewModel()
+            SnispfTheme { Surface(Modifier.fillMaxSize()) { SnispfApp(vm) } }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::vm.isInitialized) vm.isInForeground = true
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (::vm.isInitialized) vm.isInForeground = false
     }
 }
 
@@ -148,7 +182,7 @@ fun ProxyTab(state: UiState, vm: SnispfViewModel) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 MiniCard("Active", "${state.pool.activeConnections}", Icons.Default.Link)
                 MiniCard("Uptime", formatUptime(state.pool.uptimeSeconds), Icons.Default.Timer)
-                MiniCard("Pool", "${state.pool.probedStable}/${state.pool.pairsProbed}", Icons.Default.Hub)
+                MiniCard("Pool", "${state.pool.activeSlots}+${state.pool.drainingSlots}d", Icons.Default.Hub)
             }
         }
 
@@ -235,11 +269,14 @@ fun StatsTab(state: UiState) {
 
         SectionTitle("Active Pool  (${p.activeSlots} active slots)")
         StatsCard {
-            StatRow("Stable pairs", "${p.probedStable}", Color(0xFF4CAF50))
-            StatRow("Weak pairs",   "${p.probedWeak}",   Color(0xFFFFC107))
-            StatRow("Dead pairs",   "${p.probedDead}",   Color(0xFFF44336))
+            StatRow("Stable pairs",   "${p.probedStable}", Color(0xFF4CAF50))
+            StatRow("Weak pairs",     "${p.probedWeak}",   Color(0xFFFFC107))
+            StatRow("Dead pairs",     "${p.probedDead}",   Color(0xFFF44336))
+            if (p.drainingSlots > 0) {
+                StatRow("Draining",   "${p.drainingSlots}", Color(0xFF9E9E9E))
+            }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-            StatRow("Probed total", "${p.probedTotal}")
+            StatRow("Probed total",   "${p.probedTotal}")
         }
 
         SectionTitle("Probe Discovery  (${p.pairsProbed}/${p.pairsTotal})")

@@ -20,6 +20,7 @@ enum class ProxyStatus { STOPPED, STARTING, RUNNING, STOPPING, ERROR }
 
 data class PoolStats(
     val activeSlots: Int = 0,
+    val drainingSlots: Int = 0,
     val probedStable: Int = 0,
     val probedWeak: Int = 0,
     val probedDead: Int = 0,
@@ -90,7 +91,11 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
             val rootInt = if (state.useRoot) 1 else 0
             val result  = b.callAttr("start", state.configJson, rootInt).toString()
             when (result) {
-                "ok", "already_running" -> startPolling()
+                "ok", "already_running" -> {
+                    // Start foreground service to prevent OS from killing the process
+                    SnispfService.start(getApplication())
+                    startPolling()
+                }
                 else -> updateState { copy(status = ProxyStatus.ERROR, errorMessage = result) }
             }
         }
@@ -100,6 +105,7 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             bridge?.callAttr("stop")
             updateState { copy(status = ProxyStatus.STOPPING) }
+            SnispfService.stop(getApplication())
         }
     }
 
@@ -121,6 +127,9 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    // Track whether app is in foreground
+    var isInForeground: Boolean = true
+
     private fun startPolling() {
         pollJob?.cancel()
         pollJob = viewModelScope.launch(Dispatchers.IO) {
@@ -128,8 +137,6 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
                 val b = bridge ?: break
 
                 val statusStr = b.callAttr("get_status").toString()
-                val logsStr   = b.callAttr("get_logs").toString()
-                val statsStr  = b.callAttr("get_stats").toString()
 
                 val status = when (statusStr) {
                     "running"  -> ProxyStatus.RUNNING
@@ -139,36 +146,50 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
                     else       -> ProxyStatus.STOPPED
                 }
 
-                val logs = if (logsStr.isBlank()) emptyList()
-                           else logsStr.split("\n").filter { it.isNotBlank() }
+                if (status == ProxyStatus.STOPPED || status == ProxyStatus.ERROR) {
+                    updateState { copy(status = status) }
+                    break
+                }
 
-                val m = statsStr.lines()
-                    .filter { "=" in it }
-                    .associate { it.substringBefore("=").trim() to it.substringAfter("=").trim() }
+                // Only fetch logs and stats when app is visible
+                if (isInForeground) {
+                    val logsStr  = b.callAttr("get_logs").toString()
+                    val statsStr = b.callAttr("get_stats").toString()
 
-                fun i(key: String) = m[key]?.toIntOrNull() ?: 0
+                    val logs = if (logsStr.isBlank()) emptyList()
+                               else logsStr.split("\n").filter { it.isNotBlank() }
 
-                val pool = PoolStats(
-                    activeSlots              = i("pool_active_slots"),
-                    probedStable             = i("probed_stable"),
-                    probedWeak               = i("probed_weak"),
-                    probedDead               = i("probed_dead"),
-                    probedTotal              = i("probed_total"),
-                    pairsTotal               = i("pairs_total"),
-                    pairsProbed              = i("pairs_probed"),
-                    pairsUnprobed            = i("pairs_unprobed"),
-                    discoveryDone            = i("discovery_done") == 1,
-                    dynamicIpsFound          = i("dynamic_ips_found"),
-                    dynamicDiscoveryEnabled  = i("dynamic_ip_discovery") == 1,
-                    activeConnections        = i("active_connections"),
-                    totalConnections         = i("total_connections"),
-                    uptimeSeconds            = i("uptime_seconds"),
-                )
+                    val m = statsStr.lines()
+                        .filter { "=" in it }
+                        .associate { it.substringBefore("=").trim() to it.substringAfter("=").trim() }
 
-                updateState { copy(status = status, logs = logs, pool = pool) }
+                    fun i(key: String) = m[key]?.toIntOrNull() ?: 0
 
-                if (status == ProxyStatus.STOPPED || status == ProxyStatus.ERROR) break
-                delay(1500)
+                    val pool = PoolStats(
+                        activeSlots             = i("pool_active_slots"),
+                        drainingSlots           = i("pool_draining"),
+                        probedStable            = i("probed_stable"),
+                        probedWeak              = i("probed_weak"),
+                        probedDead              = i("probed_dead"),
+                        probedTotal             = i("probed_total"),
+                        pairsTotal              = i("pairs_total"),
+                        pairsProbed             = i("pairs_probed"),
+                        pairsUnprobed           = i("pairs_unprobed"),
+                        discoveryDone           = i("discovery_done") == 1,
+                        dynamicIpsFound         = i("dynamic_ips_found"),
+                        dynamicDiscoveryEnabled = i("dynamic_ip_discovery") == 1,
+                        activeConnections       = i("active_connections"),
+                        totalConnections        = i("total_connections"),
+                        uptimeSeconds           = i("uptime_seconds"),
+                    )
+
+                    updateState { copy(status = status, logs = logs, pool = pool) }
+                    delay(1500)
+                } else {
+                    // Background: only keep-alive check every 10s, no UI updates
+                    updateState { copy(status = status) }
+                    delay(10_000)
+                }
             }
         }
     }
