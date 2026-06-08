@@ -91,10 +91,11 @@ fun SnispfApp(vm: SnispfViewModel = viewModel()) {
         bottomBar = {
             NavigationBar {
                 listOf(
-                    Triple(0, Icons.Default.Home,     "Proxy"),
-                    Triple(1, Icons.Default.BarChart, "Stats"),
-                    Triple(2, Icons.Default.Settings, "Config"),
-                    Triple(3, Icons.Default.List,     "Log"),
+                    Triple(0, Icons.Default.Home,        "Proxy"),
+                    Triple(1, Icons.Default.BarChart,    "Stats"),
+                    Triple(2, Icons.Default.Build,       "Builder"),
+                    Triple(3, Icons.Default.Code,        "JSON"),
+                    Triple(4, Icons.Default.List,        "Log"),
                 ).forEach { (idx, icon, label) ->
                     NavigationBarItem(
                         selected = tab == idx,
@@ -110,8 +111,9 @@ fun SnispfApp(vm: SnispfViewModel = viewModel()) {
             when (tab) {
                 0 -> ProxyTab(state, vm)
                 1 -> StatsTab(state)
-                2 -> ConfigTab(state, vm)
-                3 -> LogTab(state, vm)
+                2 -> ConfigBuilderTab(vm)
+                3 -> ConfigTab(state, vm)
+                4 -> LogTab(state, vm)
             }
         }
     }
@@ -273,7 +275,7 @@ fun StatsTab(state: UiState) {
             StatRow("Weak pairs",     "${p.probedWeak}",   Color(0xFFFFC107))
             StatRow("Dead pairs",     "${p.probedDead}",   Color(0xFFF44336))
             if (p.drainingSlots > 0) {
-                StatRow("Draining",   "${p.drainingSlots}", Color(0xFF9E9E9E))
+                StatRow("Draining (max ${p.drainingSlots})", "${p.drainingSlots}", Color(0xFF9E9E9E))
             }
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
             StatRow("Probed total",   "${p.probedTotal}")
@@ -360,7 +362,7 @@ fun StatRow(label: String, value: String, valueColor: Color = MaterialTheme.colo
     }
 }
 
-// ── Tab 2: Config ─────────────────────────────────────────────────────────────
+// ── Tab 3: Config JSON (manual edit) ─────────────────────────────────────────
 @Composable
 fun ConfigTab(state: UiState, vm: SnispfViewModel) {
     var text    by remember(state.configJson) { mutableStateOf(state.configJson) }
