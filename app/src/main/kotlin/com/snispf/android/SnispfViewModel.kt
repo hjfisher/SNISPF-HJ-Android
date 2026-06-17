@@ -33,6 +33,7 @@ data class PoolStats(
     // IPDiscovery
     val dynamicIpsFound: Int = 0,
     val dynamicDiscoveryEnabled: Boolean = false,
+    val quarantineSize: Int = 0,
     // Connections
     val activeConnections: Int = 0,
     val totalConnections: Int = 0,
@@ -178,6 +179,7 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
                         discoveryDone           = i("discovery_done") == 1,
                         dynamicIpsFound         = i("dynamic_ips_found"),
                         dynamicDiscoveryEnabled = i("dynamic_ip_discovery") == 1,
+                        quarantineSize          = i("quarantine_size"),
                         activeConnections       = i("active_connections"),
                         totalConnections        = i("total_connections"),
                         uptimeSeconds           = i("uptime_seconds"),
@@ -224,6 +226,12 @@ const val DEFAULT_CONFIG = """{
   "MAX_DRAINING": 5,
   "EVICT_EVERY": 3,
   "EVICT_COUNT": 2,
+  "RECYCLE_ENABLED": true,
+  "RECYCLE_EVERY": 6,
+  "RECYCLE_BATCH": 2,
+  "RECYCLE_MIN_COOLDOWN": 180,
+  "RECYCLE_MAX_QUARANTINE": 100,
+  "QUARANTINE_SCOPE": "both",
   "DYNAMIC_IP_DISCOVERY": false,
   "DISCOVERY_BATCH": 100,
   "DISCOVERY_INTERVAL": 120,
