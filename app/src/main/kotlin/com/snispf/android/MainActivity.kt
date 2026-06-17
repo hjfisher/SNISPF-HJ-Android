@@ -310,6 +310,7 @@ fun StatsTab(state: UiState) {
                 if (p.dynamicDiscoveryEnabled) {
                     StatRow("Dynamic IPs found", "${p.dynamicIpsFound}", Color(0xFF4CAF50))
                     StatRow("Total pairs now",   "${p.pairsTotal}")
+                    StatRow("Quarantined IPs",   "${p.quarantineSize}", Color(0xFF9E9E9E))
                     Text(
                         "New Cloudflare IPs are injected every ~2 min. " +
                         "Total pairs = (static IPs + dynamic IPs) x SNIs",

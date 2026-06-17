@@ -45,6 +45,12 @@ data class BuilderState(
     val maxDraining: Int = 5,
     val evictEvery: Int = 3,
     val evictCount: Int = 2,
+    val recycleEnabled: Boolean = true,
+    val recycleEvery: Int = 6,
+    val recycleBatch: Int = 2,
+    val recycleMinCooldown: Int = 180,
+    val recycleMaxQuarantine: Int = 100,
+    val quarantineScope: String = "both",
     // Bypass
     val bypassMethod: String = "combined",
     val fragmentStrategy: String = "sni_split",
@@ -92,6 +98,12 @@ fun BuilderState.toJson(): String {
         obj.put("MAX_DRAINING",          maxDraining)
         obj.put("EVICT_EVERY",           evictEvery)
         obj.put("EVICT_COUNT",           evictCount)
+        obj.put("RECYCLE_ENABLED",       recycleEnabled)
+        obj.put("RECYCLE_EVERY",         recycleEvery)
+        obj.put("RECYCLE_BATCH",         recycleBatch)
+        obj.put("RECYCLE_MIN_COOLDOWN",  recycleMinCooldown)
+        obj.put("RECYCLE_MAX_QUARANTINE", recycleMaxQuarantine)
+        obj.put("QUARANTINE_SCOPE",      quarantineScope)
         obj.put("DYNAMIC_IP_DISCOVERY",  dynamicDiscovery)
         if (dynamicDiscovery) {
             obj.put("DISCOVERY_BATCH",        discoveryBatch)
@@ -133,6 +145,12 @@ fun builderFromJson(json: String): BuilderState {
             maxDraining      = o.optInt("MAX_DRAINING", 5),
             evictEvery       = o.optInt("EVICT_EVERY", 3),
             evictCount       = o.optInt("EVICT_COUNT", 2),
+            recycleEnabled       = o.optBoolean("RECYCLE_ENABLED", true),
+            recycleEvery         = o.optInt("RECYCLE_EVERY", 6),
+            recycleBatch         = o.optInt("RECYCLE_BATCH", 2),
+            recycleMinCooldown   = o.optInt("RECYCLE_MIN_COOLDOWN", 180),
+            recycleMaxQuarantine = o.optInt("RECYCLE_MAX_QUARANTINE", 100),
+            quarantineScope      = o.optString("QUARANTINE_SCOPE", "both"),
             bypassMethod     = o.optString("BYPASS_METHOD", "combined"),
             fragmentStrategy = o.optString("FRAGMENT_STRATEGY", "sni_split"),
             fragmentDelay    = o.optDouble("FRAGMENT_DELAY", 0.10).toFloat(),
@@ -275,6 +293,34 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                         BNumberRow("Evict Count", bs.evictCount, 1, 20) {
                             bs = bs.copy(evictCount = it); saved = false
                         }
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                        BToggleRow("Recycling", "Re-test evicted IPs and bring back the healthy ones", bs.recycleEnabled) {
+                            bs = bs.copy(recycleEnabled = it); saved = false
+                        }
+                        if (bs.recycleEnabled) {
+                            BNumberRow("Recycle Every (cycles)", bs.recycleEvery, 1, 50) {
+                                bs = bs.copy(recycleEvery = it); saved = false
+                            }
+                            BNumberRow("Recycle Batch", bs.recycleBatch, 1, 20) {
+                                bs = bs.copy(recycleBatch = it); saved = false
+                            }
+                            BNumberRow("Min Cooldown (s)", bs.recycleMinCooldown, 10, 3600) {
+                                bs = bs.copy(recycleMinCooldown = it); saved = false
+                            }
+                            BNumberRow("Max Quarantine Size", bs.recycleMaxQuarantine, 10, 1000) {
+                                bs = bs.copy(recycleMaxQuarantine = it); saved = false
+                            }
+                        }
+                        BDropdown(
+                            label = "Quarantine Scope",
+                            value = bs.quarantineScope,
+                            options = listOf(
+                                "both"    to "both — static + dynamic IPs",
+                                "static"  to "static — CONNECT_IPS only",
+                                "dynamic" to "dynamic — discovered IPs only",
+                            ),
+                            onChange = { bs = bs.copy(quarantineScope = it); saved = false }
+                        )
                     }
                 }
 

@@ -34,6 +34,7 @@ _stats = {
     "discovery_done":       0,
     "dynamic_ips_found":    0,
     "dynamic_ip_discovery": 0,
+    "quarantine_size":      0,
     "uptime_seconds":       0,
 }
 _stats_lock = threading.Lock()
@@ -107,6 +108,7 @@ def _snapshot():
         dynamic_count = 0
         if _ip_discovery is not None:
             dynamic_count = _ip_discovery.dynamic_ip_count
+        quarantine_size = len(getattr(ex, "_quarantine", {}))
 
         with _stats_lock:
             _stats["pool_active_slots"]  = len(active_pool)
@@ -122,6 +124,7 @@ def _snapshot():
             _stats["pairs_unprobed"]     = pairs_unprobed
             _stats["discovery_done"]     = 1 if pairs_unprobed == 0 else 0
             _stats["dynamic_ips_found"]  = dynamic_count
+            _stats["quarantine_size"]    = quarantine_size
 
     except Exception as e:
         _log(f"[stats] error: {e}")
