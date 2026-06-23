@@ -196,26 +196,6 @@ fun ProxyTab(state: UiState, vm: SnispfViewModel) {
             }
         }
 
-        // Root toggle
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.secondary)
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Root Mode", fontWeight = FontWeight.Medium)
-                    Text("Enables wrong_seq and TTL trick", style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Switch(checked = state.useRoot, onCheckedChange = { vm.setUseRoot(it) }, enabled = !isRunning)
-            }
-        }
-
         // Start / Stop
         Button(
             onClick  = { if (isRunning || isBusy) vm.stop() else vm.start() },
@@ -311,6 +291,7 @@ fun StatsTab(state: UiState) {
                     StatRow("Dynamic IPs found", "${p.dynamicIpsFound}", Color(0xFF4CAF50))
                     StatRow("Total pairs now",   "${p.pairsTotal}")
                     StatRow("Quarantined IPs",   "${p.quarantineSize}", Color(0xFF9E9E9E))
+                    StatRow("Quarantined SNIs",  "${p.sniQuarantineSize}", Color(0xFF9E9E9E))
                     Text(
                         "New Cloudflare IPs are injected every ~2 min. " +
                         "Total pairs = (static IPs + dynamic IPs) x SNIs",

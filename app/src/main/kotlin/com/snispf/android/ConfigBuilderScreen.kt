@@ -51,13 +51,21 @@ data class BuilderState(
     val recycleMinCooldown: Int = 180,
     val recycleMaxQuarantine: Int = 100,
     val quarantineScope: String = "both",
+    // SNI axis (symmetric to IP axis above)
+    val sniEvictEvery: Int = 3,
+    val sniEvictCount: Int = 2,
+    val sniRecycleEnabled: Boolean = true,
+    val sniRecycleEvery: Int = 6,
+    val sniRecycleBatch: Int = 2,
+    val sniRecycleMinCooldown: Int = 180,
+    val sniRecycleMaxQuarantine: Int = 100,
+    val sniQuarantineScope: String = "both",
+    val fakeSniFragmentReal: Boolean = true,
     // Bypass
     val bypassMethod: String = "combined",
     val fragmentStrategy: String = "sni_split",
     val fragmentDelay: Float = 0.10f,
     val fakeSniMethod: String = "prefix_fake",
-    val useTtlTrick: Boolean = false,
-    val noRaw: Boolean = false,
     // IP Discovery
     val dynamicDiscovery: Boolean = false,
     val discoveryBatch: Int = 100,
@@ -80,9 +88,8 @@ fun BuilderState.toJson(): String {
     obj.put("BYPASS_METHOD",     bypassMethod)
     obj.put("FRAGMENT_STRATEGY", fragmentStrategy)
     obj.put("FRAGMENT_DELAY",    String.format("%.2f", fragmentDelay).toDouble())
-    obj.put("USE_TTL_TRICK",     useTtlTrick)
     obj.put("FAKE_SNI_METHOD",   fakeSniMethod)
-    if (noRaw) obj.put("NO_RAW", true)
+    obj.put("FAKE_SNI_FRAGMENT_REAL", fakeSniFragmentReal)
 
     if (singleMode) {
         if (singleIp.isNotBlank())  obj.put("CONNECT_IP", singleIp.trim())
@@ -104,6 +111,14 @@ fun BuilderState.toJson(): String {
         obj.put("RECYCLE_MIN_COOLDOWN",  recycleMinCooldown)
         obj.put("RECYCLE_MAX_QUARANTINE", recycleMaxQuarantine)
         obj.put("QUARANTINE_SCOPE",      quarantineScope)
+        obj.put("SNI_EVICT_EVERY",            sniEvictEvery)
+        obj.put("SNI_EVICT_COUNT",            sniEvictCount)
+        obj.put("SNI_RECYCLE_ENABLED",        sniRecycleEnabled)
+        obj.put("SNI_RECYCLE_EVERY",          sniRecycleEvery)
+        obj.put("SNI_RECYCLE_BATCH",          sniRecycleBatch)
+        obj.put("SNI_RECYCLE_MIN_COOLDOWN",   sniRecycleMinCooldown)
+        obj.put("SNI_RECYCLE_MAX_QUARANTINE", sniRecycleMaxQuarantine)
+        obj.put("SNI_QUARANTINE_SCOPE",       sniQuarantineScope)
         obj.put("DYNAMIC_IP_DISCOVERY",  dynamicDiscovery)
         if (dynamicDiscovery) {
             obj.put("DISCOVERY_BATCH",        discoveryBatch)
@@ -151,12 +166,19 @@ fun builderFromJson(json: String): BuilderState {
             recycleMinCooldown   = o.optInt("RECYCLE_MIN_COOLDOWN", 180),
             recycleMaxQuarantine = o.optInt("RECYCLE_MAX_QUARANTINE", 100),
             quarantineScope      = o.optString("QUARANTINE_SCOPE", "both"),
+            sniEvictEvery         = o.optInt("SNI_EVICT_EVERY", 3),
+            sniEvictCount         = o.optInt("SNI_EVICT_COUNT", 2),
+            sniRecycleEnabled     = o.optBoolean("SNI_RECYCLE_ENABLED", true),
+            sniRecycleEvery       = o.optInt("SNI_RECYCLE_EVERY", 6),
+            sniRecycleBatch       = o.optInt("SNI_RECYCLE_BATCH", 2),
+            sniRecycleMinCooldown = o.optInt("SNI_RECYCLE_MIN_COOLDOWN", 180),
+            sniRecycleMaxQuarantine = o.optInt("SNI_RECYCLE_MAX_QUARANTINE", 100),
+            sniQuarantineScope    = o.optString("SNI_QUARANTINE_SCOPE", "both"),
+            fakeSniFragmentReal   = o.optBoolean("FAKE_SNI_FRAGMENT_REAL", true),
             bypassMethod     = o.optString("BYPASS_METHOD", "combined"),
             fragmentStrategy = o.optString("FRAGMENT_STRATEGY", "sni_split"),
             fragmentDelay    = o.optDouble("FRAGMENT_DELAY", 0.10).toFloat(),
             fakeSniMethod    = o.optString("FAKE_SNI_METHOD", "prefix_fake"),
-            useTtlTrick      = o.optBoolean("USE_TTL_TRICK", false),
-            noRaw            = o.optBoolean("NO_RAW", false),
             dynamicDiscovery    = o.optBoolean("DYNAMIC_IP_DISCOVERY", false),
             discoveryBatch      = o.optInt("DISCOVERY_BATCH", 100),
             discoveryInterval   = o.optInt("DISCOVERY_INTERVAL", 120),
@@ -324,6 +346,45 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                     }
                 }
 
+                item {
+                    BSection("SNI Pool Settings  (symmetric to IP axis)", Icons.Default.Tag) {
+                        BNumberRow("SNI Evict Every (cycles)", bs.sniEvictEvery, 1, 20) {
+                            bs = bs.copy(sniEvictEvery = it); saved = false
+                        }
+                        BNumberRow("SNI Evict Count", bs.sniEvictCount, 1, 20) {
+                            bs = bs.copy(sniEvictCount = it); saved = false
+                        }
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                        BToggleRow("SNI Recycling", "Re-test evicted SNIs and bring back healthy ones", bs.sniRecycleEnabled) {
+                            bs = bs.copy(sniRecycleEnabled = it); saved = false
+                        }
+                        if (bs.sniRecycleEnabled) {
+                            BNumberRow("SNI Recycle Every (cycles)", bs.sniRecycleEvery, 1, 50) {
+                                bs = bs.copy(sniRecycleEvery = it); saved = false
+                            }
+                            BNumberRow("SNI Recycle Batch", bs.sniRecycleBatch, 1, 20) {
+                                bs = bs.copy(sniRecycleBatch = it); saved = false
+                            }
+                            BNumberRow("SNI Min Cooldown (s)", bs.sniRecycleMinCooldown, 10, 3600) {
+                                bs = bs.copy(sniRecycleMinCooldown = it); saved = false
+                            }
+                            BNumberRow("SNI Max Quarantine Size", bs.sniRecycleMaxQuarantine, 10, 1000) {
+                                bs = bs.copy(sniRecycleMaxQuarantine = it); saved = false
+                            }
+                        }
+                        BDropdown(
+                            label = "SNI Quarantine Scope",
+                            value = bs.sniQuarantineScope,
+                            options = listOf(
+                                "both"    to "both — static + dynamic SNIs",
+                                "static"  to "static — FAKE_SNIS only",
+                                "dynamic" to "dynamic — discovered SNIs only",
+                            ),
+                            onChange = { bs = bs.copy(sniQuarantineScope = it); saved = false }
+                        )
+                    }
+                }
+
                 // ── IP Discovery ──────────────────────────────────────────────
                 item {
                     BSection("IP Discovery", Icons.Default.TravelExplore) {
@@ -397,11 +458,8 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                         ),
                         onChange = { bs = bs.copy(fakeSniMethod = it); saved = false }
                     )
-                    BToggleRow("Use TTL Trick", "Requires root", bs.useTtlTrick) {
-                        bs = bs.copy(useTtlTrick = it); saved = false
-                    }
-                    BToggleRow("Disable Raw Injector", "Force userspace mode even on root", bs.noRaw) {
-                        bs = bs.copy(noRaw = it); saved = false
+                    BToggleRow("Fragment Real ClientHello", "Also fragment the real handshake (not just the fake SNI)", bs.fakeSniFragmentReal) {
+                        bs = bs.copy(fakeSniFragmentReal = it); saved = false
                     }
                 }
             }
