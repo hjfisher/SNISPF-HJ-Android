@@ -35,6 +35,7 @@ _stats = {
     "dynamic_ips_found":    0,
     "dynamic_ip_discovery": 0,
     "quarantine_size":      0,
+    "sni_quarantine_size":  0,
     "uptime_seconds":       0,
 }
 _stats_lock = threading.Lock()
@@ -108,7 +109,8 @@ def _snapshot():
         dynamic_count = 0
         if _ip_discovery is not None:
             dynamic_count = _ip_discovery.dynamic_ip_count
-        quarantine_size = len(getattr(ex, "_quarantine", {}))
+        ip_quarantine  = len(getattr(ex, "_ip_quarantine", {}))
+        sni_quarantine = len(getattr(ex, "_sni_quarantine", {}))
 
         with _stats_lock:
             _stats["pool_active_slots"]  = len(active_pool)
@@ -124,14 +126,15 @@ def _snapshot():
             _stats["pairs_unprobed"]     = pairs_unprobed
             _stats["discovery_done"]     = 1 if pairs_unprobed == 0 else 0
             _stats["dynamic_ips_found"]  = dynamic_count
-            _stats["quarantine_size"]    = quarantine_size
+            _stats["quarantine_size"]     = ip_quarantine
+            _stats["sni_quarantine_size"] = sni_quarantine
 
     except Exception as e:
         _log(f"[stats] error: {e}")
 
 
 # ── Proxy thread ──────────────────────────────────────────────────────────────
-def _run_proxy(config_json, use_root_int):
+def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, unused
     global _status, _loop, _start_time, _conn_manager, _ip_discovery
 
     use_root    = (use_root_int == 1)
@@ -186,16 +189,9 @@ def _run_proxy(config_json, use_root_int):
 
         interface_ip = get_default_interface_ipv4(config["CONNECT_IP"])
 
-        # Root injector
+        # Raw injector (root) is not supported on Android — Chaquopy sandbox
+        # cannot obtain CAP_NET_RAW, so we always use userspace fragmentation.
         raw_injector = None
-        if use_root:
-            try:
-                from sni_spoofing.bypass.raw_injector import build_raw_injector
-                raw_injector = build_raw_injector(config)
-                _log("Root mode: raw injector active")
-            except Exception as e:
-                _log(f"Root injector failed (fallback): {e}")
-
         strategy     = build_strategy(config, raw_injector=raw_injector)
         listen_host  = config.get("LISTEN_HOST",  "0.0.0.0")
         listen_port  = int(config.get("LISTEN_PORT",  40443))

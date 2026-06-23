@@ -34,6 +34,7 @@ data class PoolStats(
     val dynamicIpsFound: Int = 0,
     val dynamicDiscoveryEnabled: Boolean = false,
     val quarantineSize: Int = 0,
+    val sniQuarantineSize: Int = 0,
     // Connections
     val activeConnections: Int = 0,
     val totalConnections: Int = 0,
@@ -45,14 +46,12 @@ data class UiState(
     val logs: List<String> = emptyList(),
     val configJson: String = DEFAULT_CONFIG,
     val listenPort: Int = 40443,
-    val useRoot: Boolean = false,
     val errorMessage: String? = null,
     val pool: PoolStats = PoolStats(),
 )
 
 private const val PREFS_NAME   = "snispf_prefs"
 private const val KEY_CONFIG   = "config_json"
-private const val KEY_USE_ROOT = "use_root"
 
 class SnispfViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -61,7 +60,6 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
     private val _uiState = MutableStateFlow(
         UiState(
             configJson = prefs.getString(KEY_CONFIG, DEFAULT_CONFIG) ?: DEFAULT_CONFIG,
-            useRoot    = prefs.getBoolean(KEY_USE_ROOT, false),
         )
     )
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -89,8 +87,7 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             val b = bridge ?: return@launch
             updateState { copy(status = ProxyStatus.STARTING, logs = emptyList(), errorMessage = null, pool = PoolStats()) }
-            val rootInt = if (state.useRoot) 1 else 0
-            val result  = b.callAttr("start", state.configJson, rootInt).toString()
+            val result = b.callAttr("start", state.configJson, 0).toString()
             when (result) {
                 "ok", "already_running" -> {
                     // Start foreground service to prevent OS from killing the process
@@ -114,11 +111,6 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
         prefs.edit().putString(KEY_CONFIG, json).apply()
         val port = try { JSONObject(json).optInt("LISTEN_PORT", 40443) } catch (_: Exception) { 40443 }
         updateState { copy(configJson = json, listenPort = port) }
-    }
-
-    fun setUseRoot(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_USE_ROOT, enabled).apply()
-        updateState { copy(useRoot = enabled) }
     }
 
     fun clearLogs() {
@@ -180,6 +172,7 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
                         dynamicIpsFound         = i("dynamic_ips_found"),
                         dynamicDiscoveryEnabled = i("dynamic_ip_discovery") == 1,
                         quarantineSize          = i("quarantine_size"),
+                        sniQuarantineSize       = i("sni_quarantine_size"),
                         activeConnections       = i("active_connections"),
                         totalConnections        = i("total_connections"),
                         uptimeSeconds           = i("uptime_seconds"),
@@ -214,7 +207,6 @@ const val DEFAULT_CONFIG = """{
   "BYPASS_METHOD": "combined",
   "FRAGMENT_STRATEGY": "sni_split",
   "FRAGMENT_DELAY": 0.1,
-  "USE_TTL_TRICK": false,
   "FAKE_SNI_METHOD": "prefix_fake",
   "ACTIVE_SLOTS": 3,
   "HEALTH_CHECK_INTERVAL": 30,
@@ -232,6 +224,15 @@ const val DEFAULT_CONFIG = """{
   "RECYCLE_MIN_COOLDOWN": 180,
   "RECYCLE_MAX_QUARANTINE": 100,
   "QUARANTINE_SCOPE": "both",
+  "SNI_EVICT_EVERY": 3,
+  "SNI_EVICT_COUNT": 2,
+  "SNI_RECYCLE_ENABLED": true,
+  "SNI_RECYCLE_EVERY": 6,
+  "SNI_RECYCLE_BATCH": 2,
+  "SNI_RECYCLE_MIN_COOLDOWN": 180,
+  "SNI_RECYCLE_MAX_QUARANTINE": 100,
+  "SNI_QUARANTINE_SCOPE": "both",
+  "FAKE_SNI_FRAGMENT_REAL": true,
   "DYNAMIC_IP_DISCOVERY": false,
   "DISCOVERY_BATCH": 100,
   "DISCOVERY_INTERVAL": 120,
