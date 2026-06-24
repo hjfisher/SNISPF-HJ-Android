@@ -12,8 +12,9 @@ import time
 _proxy_thread = None
 _stop_event   = threading.Event()
 _loop         = None
-_conn_manager = None
-_ip_discovery = None
+_conn_manager  = None
+_ip_discovery  = None
+_sni_discovery = None
 
 _log_buffer   = []
 _log_lock     = threading.Lock()
@@ -34,6 +35,8 @@ _stats = {
     "discovery_done":       0,
     "dynamic_ips_found":    0,
     "dynamic_ip_discovery": 0,
+    "dynamic_snis_found":   0,
+    "dynamic_sni_discovery": 0,
     "quarantine_size":      0,
     "sni_quarantine_size":  0,
     "uptime_seconds":       0,
@@ -106,9 +109,12 @@ def _snapshot():
         pairs_probed   = len(probed)
         pairs_unprobed = pairs_total - pairs_probed
 
-        dynamic_count = 0
+        dynamic_ip_count = 0
         if _ip_discovery is not None:
-            dynamic_count = _ip_discovery.dynamic_ip_count
+            dynamic_ip_count = _ip_discovery.dynamic_ip_count
+        dynamic_sni_count = 0
+        if _sni_discovery is not None:
+            dynamic_sni_count = _sni_discovery.dynamic_sni_count
         ip_quarantine  = len(getattr(ex, "_ip_quarantine", {}))
         sni_quarantine = len(getattr(ex, "_sni_quarantine", {}))
 
@@ -154,6 +160,7 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
         from sni_spoofing.forwarder     import start_server
         from sni_spoofing.pool          import build_connection_manager
         from sni_spoofing.ip_discovery  import build_ip_discovery
+        from sni_spoofing.sni_discovery import build_sni_discovery
         from sni_spoofing.utils         import get_default_interface_ipv4, resolve_host
         _log("Imports OK")
 
@@ -184,6 +191,16 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
                     _stats["dynamic_ip_discovery"] = 1
             else:
                 _log("Dynamic IP discovery disabled (set DYNAMIC_IP_DISCOVERY=true to enable)")
+
+            # Start SNI discovery if enabled in config (mirrors IP discovery)
+            _sni_discovery = build_sni_discovery(_conn_manager, config)
+            if _sni_discovery is not None:
+                _sni_discovery.start()
+                _log(f"Dynamic SNI discovery enabled — will sample Tranco/Umbrella/Majestic every {int(config.get('SNI_DISCOVERY_INTERVAL', 120))}s")
+                with _stats_lock:
+                    _stats["dynamic_sni_discovery"] = 1
+            else:
+                _log("Dynamic SNI discovery disabled (set DYNAMIC_SNI_DISCOVERY=true to enable)")
         else:
             _log("Single-endpoint mode (no pool)")
 
@@ -254,9 +271,10 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
             root.addHandler(h)
         if _loop and not _loop.is_closed():
             _loop.close()
-        _loop         = None
-        _conn_manager = None
-        _ip_discovery = None
+        _loop          = None
+        _conn_manager  = None
+        _ip_discovery  = None
+        _sni_discovery = None
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
