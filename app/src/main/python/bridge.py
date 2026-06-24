@@ -85,7 +85,7 @@ def _install_log_capture():
 
 # ── Stats snapshot ────────────────────────────────────────────────────────────
 def _snapshot():
-    global _conn_manager, _ip_discovery
+    global _conn_manager, _ip_discovery, _sni_discovery
     cm = _conn_manager
     if cm is None:
         return
@@ -102,11 +102,11 @@ def _snapshot():
         dead   = [p for p in probed if not p.alive]
 
         # active_connections = _pool + _draining (draining pairs still serve live conns)
-        active_pool     = pool._pool     if hasattr(pool, "_pool")     else []
-        draining_pool   = pool._draining if hasattr(pool, "_draining") else []
-        serving_pairs   = active_pool + draining_pool
-        active_conns    = sum(p.active_connections for p in serving_pairs)
-        total_conns     = sum(p.total_connections  for p in all_pairs)
+        active_pool   = pool._pool     if hasattr(pool, "_pool")     else []
+        draining_pool = pool._draining if hasattr(pool, "_draining") else []
+        serving_pairs = active_pool + draining_pool
+        active_conns  = sum(p.active_connections for p in serving_pairs)
+        total_conns   = sum(p.total_connections  for p in all_pairs)
 
         pairs_probed   = len(probed)
         pairs_unprobed = pairs_total - pairs_probed
@@ -114,9 +114,9 @@ def _snapshot():
         # Count unique static/dynamic IPs and SNIs directly from pool truth
         # (origin is stamped on every PairStats — more reliable than the
         # discovery threads' own internal counters).
-        static_ips:  set = set()
-        dynamic_ips: set = set()
-        static_snis: set = set()
+        static_ips:   set = set()
+        dynamic_ips:  set = set()
+        static_snis:  set = set()
         dynamic_snis: set = set()
         for ps in all_pairs:
             (dynamic_ips if ps.ip_origin == "dynamic" else static_ips).add(ps.ip)
@@ -126,19 +126,22 @@ def _snapshot():
         sni_quarantine = len(getattr(ex, "_sni_quarantine", {}))
 
         with _stats_lock:
-            _stats["pool_active_slots"]  = len(active_pool)
-            _stats["pool_draining"]      = len(draining_pool)
-            _stats["active_connections"] = active_conns
-            _stats["total_connections"]  = total_conns
-            _stats["probed_stable"]      = len(stable)
-            _stats["probed_weak"]        = len(weak)
-            _stats["probed_dead"]        = len(dead)
-            _stats["probed_total"]       = pairs_probed
-            _stats["pairs_total"]        = pairs_total
-            _stats["pairs_probed"]       = pairs_probed
-            _stats["pairs_unprobed"]     = pairs_unprobed
-            _stats["discovery_done"]     = 1 if pairs_unprobed == 0 else 0
-            _stats["dynamic_ips_found"]  = dynamic_count
+            _stats["pool_active_slots"]   = len(active_pool)
+            _stats["pool_draining"]       = len(draining_pool)
+            _stats["active_connections"]  = active_conns
+            _stats["total_connections"]   = total_conns
+            _stats["probed_stable"]       = len(stable)
+            _stats["probed_weak"]         = len(weak)
+            _stats["probed_dead"]         = len(dead)
+            _stats["probed_total"]        = pairs_probed
+            _stats["pairs_total"]         = pairs_total
+            _stats["pairs_probed"]        = pairs_probed
+            _stats["pairs_unprobed"]      = pairs_unprobed
+            _stats["discovery_done"]      = 1 if pairs_unprobed == 0 else 0
+            _stats["static_ips_count"]    = len(static_ips)
+            _stats["dynamic_ips_found"]   = len(dynamic_ips)
+            _stats["static_snis_count"]   = len(static_snis)
+            _stats["dynamic_snis_found"]  = len(dynamic_snis)
             _stats["quarantine_size"]     = ip_quarantine
             _stats["sni_quarantine_size"] = sni_quarantine
 
