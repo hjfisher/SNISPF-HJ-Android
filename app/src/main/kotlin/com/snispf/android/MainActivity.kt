@@ -288,8 +288,9 @@ fun StatsTab(state: UiState) {
                     if (p.dynamicDiscoveryEnabled) Color(0xFF4CAF50) else Color(0xFF757575)
                 )
                 if (p.dynamicDiscoveryEnabled) {
-                    StatRow("Dynamic IPs found", "${p.dynamicIpsFound}", Color(0xFF4CAF50))
-                    StatRow("Quarantined IPs",   "${p.quarantineSize}", Color(0xFF9E9E9E))
+                    StatRow("Static IPs (from config)", "${p.staticIpsCount}")
+                    StatRow("Dynamic IPs found",        "${p.dynamicIpsFound}", Color(0xFF4CAF50))
+                    StatRow("Quarantined IPs",           "${p.quarantineSize}", Color(0xFF9E9E9E))
                     Text(
                         "New Cloudflare IPs are injected every ~2 min.",
                         style = MaterialTheme.typography.labelSmall,
@@ -315,8 +316,9 @@ fun StatsTab(state: UiState) {
                     if (p.sniDynamicDiscoveryEnabled) Color(0xFF4CAF50) else Color(0xFF757575)
                 )
                 if (p.sniDynamicDiscoveryEnabled) {
-                    StatRow("Dynamic SNIs found", "${p.dynamicSnisFound}", Color(0xFF4CAF50))
-                    StatRow("Quarantined SNIs",   "${p.sniQuarantineSize}", Color(0xFF9E9E9E))
+                    StatRow("Static SNIs (from config)", "${p.staticSnisCount}")
+                    StatRow("Dynamic SNIs found",         "${p.dynamicSnisFound}", Color(0xFF4CAF50))
+                    StatRow("Quarantined SNIs",            "${p.sniQuarantineSize}", Color(0xFF9E9E9E))
                     Text(
                         "Samples Tranco/Umbrella/Majestic domain lists, verifies Cloudflare hosting + TLS, then injects new SNIs.",
                         style = MaterialTheme.typography.labelSmall,
@@ -336,9 +338,14 @@ fun StatsTab(state: UiState) {
 
         SectionTitle("Pool Totals")
         StatsCard {
-            StatRow("Total pairs now", "${p.pairsTotal}")
+            val totalIps  = p.staticIpsCount + p.dynamicIpsFound
+            val totalSnis = p.staticSnisCount + p.dynamicSnisFound
+            StatRow("Total IPs",      "$totalIps  (${p.staticIpsCount} static + ${p.dynamicIpsFound} dynamic)")
+            StatRow("Total SNIs",     "$totalSnis  (${p.staticSnisCount} static + ${p.dynamicSnisFound} dynamic)")
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            StatRow("Total pairs now", "${p.pairsTotal}", Color(0xFF4CAF50))
             Text(
-                "Total pairs = (static + dynamic IPs) x (static + dynamic SNIs)",
+                "Total pairs = Total IPs x Total SNIs — grows as either axis discovers more.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
