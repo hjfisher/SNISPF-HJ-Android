@@ -33,8 +33,10 @@ _stats = {
     "pairs_probed":         0,
     "pairs_unprobed":       0,
     "discovery_done":       0,
+    "static_ips_count":     0,
     "dynamic_ips_found":    0,
     "dynamic_ip_discovery": 0,
+    "static_snis_count":    0,
     "dynamic_snis_found":   0,
     "dynamic_sni_discovery": 0,
     "quarantine_size":      0,
@@ -109,12 +111,17 @@ def _snapshot():
         pairs_probed   = len(probed)
         pairs_unprobed = pairs_total - pairs_probed
 
-        dynamic_ip_count = 0
-        if _ip_discovery is not None:
-            dynamic_ip_count = _ip_discovery.dynamic_ip_count
-        dynamic_sni_count = 0
-        if _sni_discovery is not None:
-            dynamic_sni_count = _sni_discovery.dynamic_sni_count
+        # Count unique static/dynamic IPs and SNIs directly from pool truth
+        # (origin is stamped on every PairStats — more reliable than the
+        # discovery threads' own internal counters).
+        static_ips:  set = set()
+        dynamic_ips: set = set()
+        static_snis: set = set()
+        dynamic_snis: set = set()
+        for ps in all_pairs:
+            (dynamic_ips if ps.ip_origin == "dynamic" else static_ips).add(ps.ip)
+            (dynamic_snis if ps.sni_origin == "dynamic" else static_snis).add(ps.sni)
+
         ip_quarantine  = len(getattr(ex, "_ip_quarantine", {}))
         sni_quarantine = len(getattr(ex, "_sni_quarantine", {}))
 
