@@ -74,6 +74,15 @@ data class BuilderState(
     val discoveryTimeout: Float = 2.0f,
     val discoveryMinSuccess: Float = 0.50f,
     val discoveryMaxIps: Int = 200,
+    // SNI Discovery (mirrors IP discovery on the SNI axis)
+    val sniDynamicDiscovery: Boolean = false,
+    val sniDiscoveryBatch: Int = 50,
+    val sniDiscoveryInterval: Int = 120,
+    val sniSourceRefreshInterval: Int = 21600,
+    val sniDiscoveryProbeTries: Int = 3,
+    val sniDiscoveryTimeout: Float = 2.0f,
+    val sniDiscoveryMinSuccess: Float = 0.50f,
+    val maxDynamicSnis: Int = 100,
     // Network
     val listenHost: String = "0.0.0.0",
     val listenPort: Int = 40443,
@@ -127,6 +136,16 @@ fun BuilderState.toJson(): String {
             obj.put("DISCOVERY_TIMEOUT",      String.format("%.1f", discoveryTimeout).toDouble())
             obj.put("DISCOVERY_MIN_SUCCESS",  String.format("%.2f", discoveryMinSuccess).toDouble())
             obj.put("DISCOVERY_MAX_IPS",      discoveryMaxIps)
+        }
+        obj.put("DYNAMIC_SNI_DISCOVERY", sniDynamicDiscovery)
+        if (sniDynamicDiscovery) {
+            obj.put("SNI_DISCOVERY_BATCH",            sniDiscoveryBatch)
+            obj.put("SNI_DISCOVERY_INTERVAL",         sniDiscoveryInterval)
+            obj.put("SNI_SOURCE_REFRESH_INTERVAL",    sniSourceRefreshInterval)
+            obj.put("SNI_DISCOVERY_PROBE_TRIES",      sniDiscoveryProbeTries)
+            obj.put("SNI_DISCOVERY_TIMEOUT",          String.format("%.1f", sniDiscoveryTimeout).toDouble())
+            obj.put("SNI_DISCOVERY_MIN_SUCCESS",      String.format("%.2f", sniDiscoveryMinSuccess).toDouble())
+            obj.put("MAX_DYNAMIC_SNIS",               maxDynamicSnis)
         }
         val ipsArr = JSONArray(); connectIps.forEach { ipsArr.put(it) }
         val snisArr = JSONArray(); fakeSnis.forEach { snisArr.put(it) }
@@ -186,6 +205,14 @@ fun builderFromJson(json: String): BuilderState {
             discoveryTimeout    = o.optDouble("DISCOVERY_TIMEOUT", 2.0).toFloat(),
             discoveryMinSuccess = o.optDouble("DISCOVERY_MIN_SUCCESS", 0.50).toFloat(),
             discoveryMaxIps     = o.optInt("DISCOVERY_MAX_IPS", 200),
+            sniDynamicDiscovery      = o.optBoolean("DYNAMIC_SNI_DISCOVERY", false),
+            sniDiscoveryBatch        = o.optInt("SNI_DISCOVERY_BATCH", 50),
+            sniDiscoveryInterval     = o.optInt("SNI_DISCOVERY_INTERVAL", 120),
+            sniSourceRefreshInterval = o.optInt("SNI_SOURCE_REFRESH_INTERVAL", 21600),
+            sniDiscoveryProbeTries   = o.optInt("SNI_DISCOVERY_PROBE_TRIES", 3),
+            sniDiscoveryTimeout      = o.optDouble("SNI_DISCOVERY_TIMEOUT", 2.0).toFloat(),
+            sniDiscoveryMinSuccess   = o.optDouble("SNI_DISCOVERY_MIN_SUCCESS", 0.50).toFloat(),
+            maxDynamicSnis           = o.optInt("MAX_DYNAMIC_SNIS", 100),
             listenHost       = o.optString("LISTEN_HOST", "0.0.0.0"),
             listenPort       = o.optInt("LISTEN_PORT", 40443),
             connectPort      = o.optInt("CONNECT_PORT", 443),
@@ -412,6 +439,41 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                             }
                             BSliderRow("Max IPs to collect", bs.discoveryMaxIps, 10, 500, "{v} IPs") {
                                 bs = bs.copy(discoveryMaxIps = it); saved = false
+                            }
+                        }
+                    }
+                }
+
+                // ── SNI Discovery (mirrors IP Discovery) ────────────────────────
+                item {
+                    BSection("SNI Discovery", Icons.Default.TravelExplore) {
+                        BToggleRow(
+                            label    = "Dynamic SNI Discovery",
+                            sublabel = "Sample Tranco/Umbrella/Majestic domain lists to find new Cloudflare-hosted SNIs",
+                            checked  = bs.sniDynamicDiscovery,
+                            onChange = { bs = bs.copy(sniDynamicDiscovery = it); saved = false }
+                        )
+                        if (bs.sniDynamicDiscovery) {
+                            BNumberRow("Batch Size", bs.sniDiscoveryBatch, 10, 500) {
+                                bs = bs.copy(sniDiscoveryBatch = it); saved = false
+                            }
+                            BNumberRow("Scan Interval (s)", bs.sniDiscoveryInterval, 30, 3600) {
+                                bs = bs.copy(sniDiscoveryInterval = it); saved = false
+                            }
+                            BNumberRow("Source Refresh (s)", bs.sniSourceRefreshInterval, 300, 86400) {
+                                bs = bs.copy(sniSourceRefreshInterval = it); saved = false
+                            }
+                            BNumberRow("Probe Tries per SNI", bs.sniDiscoveryProbeTries, 1, 10) {
+                                bs = bs.copy(sniDiscoveryProbeTries = it); saved = false
+                            }
+                            BNumberRow("Probe Timeout (s)", bs.sniDiscoveryTimeout.toInt(), 1, 10) {
+                                bs = bs.copy(sniDiscoveryTimeout = it.toFloat()); saved = false
+                            }
+                            BSliderRow("Min Success Rate", (bs.sniDiscoveryMinSuccess * 100).toInt(), 0, 100, "{v}%") {
+                                bs = bs.copy(sniDiscoveryMinSuccess = it / 100f); saved = false
+                            }
+                            BSliderRow("Max Dynamic SNIs", bs.maxDynamicSnis, 10, 500, "{v} SNIs") {
+                                bs = bs.copy(maxDynamicSnis = it); saved = false
                             }
                         }
                     }
