@@ -83,6 +83,13 @@ data class BuilderState(
     val sniDiscoveryTimeout: Float = 2.0f,
     val sniDiscoveryMinSuccess: Float = 0.50f,
     val maxDynamicSnis: Int = 100,
+    // Traffic Shaping (defeats flow-based DPI fingerprinting post-handshake)
+    val shapingEnabled: Boolean = false,
+    val shapingMinChunk: Int = 200,
+    val shapingMaxChunk: Int = 1200,
+    val shapingMinDelayMs: Int = 5,
+    val shapingMaxDelayMs: Int = 40,
+    val shapingDirection: String = "download_only",
     // Network
     val listenHost: String = "0.0.0.0",
     val listenPort: Int = 40443,
@@ -146,6 +153,14 @@ fun BuilderState.toJson(): String {
             obj.put("SNI_DISCOVERY_TIMEOUT",          String.format("%.1f", sniDiscoveryTimeout).toDouble())
             obj.put("SNI_DISCOVERY_MIN_SUCCESS",      String.format("%.2f", sniDiscoveryMinSuccess).toDouble())
             obj.put("MAX_DYNAMIC_SNIS",               maxDynamicSnis)
+        }
+        obj.put("TRAFFIC_SHAPING_ENABLED", shapingEnabled)
+        if (shapingEnabled) {
+            obj.put("SHAPING_MIN_CHUNK",     shapingMinChunk)
+            obj.put("SHAPING_MAX_CHUNK",     shapingMaxChunk)
+            obj.put("SHAPING_MIN_DELAY_MS",  shapingMinDelayMs.toDouble())
+            obj.put("SHAPING_MAX_DELAY_MS",  shapingMaxDelayMs.toDouble())
+            obj.put("SHAPING_DIRECTION",     shapingDirection)
         }
         val ipsArr = JSONArray(); connectIps.forEach { ipsArr.put(it) }
         val snisArr = JSONArray(); fakeSnis.forEach { snisArr.put(it) }
@@ -213,6 +228,12 @@ fun builderFromJson(json: String): BuilderState {
             sniDiscoveryTimeout      = o.optDouble("SNI_DISCOVERY_TIMEOUT", 2.0).toFloat(),
             sniDiscoveryMinSuccess   = o.optDouble("SNI_DISCOVERY_MIN_SUCCESS", 0.50).toFloat(),
             maxDynamicSnis           = o.optInt("MAX_DYNAMIC_SNIS", 100),
+            shapingEnabled    = o.optBoolean("TRAFFIC_SHAPING_ENABLED", false),
+            shapingMinChunk   = o.optInt("SHAPING_MIN_CHUNK", 200),
+            shapingMaxChunk   = o.optInt("SHAPING_MAX_CHUNK", 1200),
+            shapingMinDelayMs = o.optDouble("SHAPING_MIN_DELAY_MS", 5.0).toInt(),
+            shapingMaxDelayMs = o.optDouble("SHAPING_MAX_DELAY_MS", 40.0).toInt(),
+            shapingDirection  = o.optString("SHAPING_DIRECTION", "download_only"),
             listenHost       = o.optString("LISTEN_HOST", "0.0.0.0"),
             listenPort       = o.optInt("LISTEN_PORT", 40443),
             connectPort      = o.optInt("CONNECT_PORT", 443),
@@ -522,6 +543,47 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                     )
                     BToggleRow("Fragment Real ClientHello", "Also fragment the real handshake (not just the fake SNI)", bs.fakeSniFragmentReal) {
                         bs = bs.copy(fakeSniFragmentReal = it); saved = false
+                    }
+                }
+            }
+
+            // ── Traffic Shaping ───────────────────────────────────────────────
+            item {
+                BSection("Traffic Shaping", Icons.Default.GraphicEq) {
+                    BToggleRow(
+                        label    = "Traffic Shaping",
+                        sublabel = "Reshapes post-handshake relay traffic so it doesn't look like a flat proxy tunnel — defeats flow-based DPI",
+                        checked  = bs.shapingEnabled,
+                        onChange = { bs = bs.copy(shapingEnabled = it); saved = false }
+                    )
+                    if (bs.shapingEnabled) {
+                        BDropdown(
+                            label = "Direction",
+                            value = bs.shapingDirection,
+                            options = listOf(
+                                "download_only" to "download_only — shape server→client only (default)",
+                                "both"          to "both — shape both directions",
+                            ),
+                            onChange = { bs = bs.copy(shapingDirection = it); saved = false }
+                        )
+                        BNumberRow("Min Chunk (bytes)", bs.shapingMinChunk, 1, 8192) {
+                            bs = bs.copy(shapingMinChunk = it); saved = false
+                        }
+                        BNumberRow("Max Chunk (bytes)", bs.shapingMaxChunk, bs.shapingMinChunk, 16384) {
+                            bs = bs.copy(shapingMaxChunk = it); saved = false
+                        }
+                        BNumberRow("Min Delay (ms)", bs.shapingMinDelayMs, 0, 1000) {
+                            bs = bs.copy(shapingMinDelayMs = it); saved = false
+                        }
+                        BNumberRow("Max Delay (ms)", bs.shapingMaxDelayMs, bs.shapingMinDelayMs, 2000) {
+                            bs = bs.copy(shapingMaxDelayMs = it); saved = false
+                        }
+                        Text(
+                            "Adds latency — only enable on networks known to fingerprint flow patterns, not just the handshake.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 16.sp,
+                        )
                     }
                 }
             }
