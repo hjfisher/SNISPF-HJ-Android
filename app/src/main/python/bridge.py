@@ -171,6 +171,7 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
         from sni_spoofing.pool          import build_connection_manager
         from sni_spoofing.ip_discovery  import build_ip_discovery
         from sni_spoofing.sni_discovery import build_sni_discovery
+        from sni_spoofing.shaping       import TrafficShaper
         from sni_spoofing.utils         import get_default_interface_ipv4, resolve_host
         _log("Imports OK")
 
@@ -224,6 +225,16 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
         listen_port  = int(config.get("LISTEN_PORT",  40443))
         connect_port = int(config.get("CONNECT_PORT", 443))
 
+        shaper = TrafficShaper.from_config(config)
+        if shaper.enabled:
+            _log(
+                f"Traffic shaping: ON (direction={shaper.direction}, "
+                f"chunk={shaper.min_chunk}-{shaper.max_chunk}B, "
+                f"delay={shaper.min_delay_ms}-{shaper.max_delay_ms}ms)"
+            )
+        else:
+            _log("Traffic shaping: off")
+
         _status     = "running"
         _start_time = time.monotonic()
         _log(f"Proxy listening {listen_host}:{listen_port} -> {config['CONNECT_IP']}:{connect_port} SNI={config['FAKE_SNI']}")
@@ -255,6 +266,7 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
                 interface_ip    = interface_ip,
                 raw_injector    = raw_injector,
                 conn_manager    = _conn_manager,
+                shaper          = shaper,
             ))
             tick = asyncio.create_task(_ticker())
             while not _stop_event.is_set():
