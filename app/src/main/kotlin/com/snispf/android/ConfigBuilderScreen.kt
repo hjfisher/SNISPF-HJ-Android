@@ -508,41 +508,54 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                         label   = "Method",
                         value   = bs.bypassMethod,
                         options = listOf(
+                            "direct"    to "Direct — no SNI spoofing, real ClientHello as-is",
                             "fragment"  to "Fragment — TLS fragmentation",
                             "fake_sni"  to "Fake SNI — SNI substitution",
                             "combined"  to "Combined — Fragment + Fake SNI",
                         ),
                         onChange = { bs = bs.copy(bypassMethod = it); saved = false }
                     )
-                    BDropdown(
-                        label   = "Fragment Strategy",
-                        value   = bs.fragmentStrategy,
-                        options = listOf(
-                            "sni_split"       to "sni_split — Split at SNI (default)",
-                            "half"            to "half — Two equal halves",
-                            "multi"           to "multi — Small 5-10 byte chunks",
-                            "tls_record_frag" to "tls_record_frag — TLS Record layer split",
-                        ),
-                        onChange = { bs = bs.copy(fragmentStrategy = it); saved = false }
-                    )
-                    BSliderRow(
-                        "Fragment Delay", (bs.fragmentDelay * 100).toInt(), 0, 100,
-                        "${String.format("%.2f", bs.fragmentDelay)}s"
-                    ) {
-                        bs = bs.copy(fragmentDelay = it / 100f); saved = false
+                    if (bs.bypassMethod == "direct") {
+                        Text(
+                            "Use when the upstream already handles censorship circumvention itself " +
+                            "(e.g. VLESS+Reality, Trojan with a real cert) — SNISPF-HJ only contributes " +
+                            "its multi-IP connection pool, not SNI spoofing.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 16.sp,
+                        )
                     }
-                    BDropdown(
-                        label   = "Fake SNI Method",
-                        value   = bs.fakeSniMethod,
-                        options = listOf(
-                            "prefix_fake"  to "prefix_fake (default)",
-                            "postfix_fake" to "postfix_fake",
-                            "custom"       to "custom",
-                        ),
-                        onChange = { bs = bs.copy(fakeSniMethod = it); saved = false }
-                    )
-                    BToggleRow("Fragment Real ClientHello", "Also fragment the real handshake (not just the fake SNI)", bs.fakeSniFragmentReal) {
-                        bs = bs.copy(fakeSniFragmentReal = it); saved = false
+                    if (bs.bypassMethod != "direct") {
+                        BDropdown(
+                            label   = "Fragment Strategy",
+                            value   = bs.fragmentStrategy,
+                            options = listOf(
+                                "sni_split"       to "sni_split — Split at SNI (default)",
+                                "half"            to "half — Two equal halves",
+                                "multi"           to "multi — Small 5-10 byte chunks",
+                                "tls_record_frag" to "tls_record_frag — TLS Record layer split",
+                            ),
+                            onChange = { bs = bs.copy(fragmentStrategy = it); saved = false }
+                        )
+                        BSliderRow(
+                            "Fragment Delay", (bs.fragmentDelay * 100).toInt(), 0, 100,
+                            "${String.format("%.2f", bs.fragmentDelay)}s"
+                        ) {
+                            bs = bs.copy(fragmentDelay = it / 100f); saved = false
+                        }
+                        BDropdown(
+                            label   = "Fake SNI Method",
+                            value   = bs.fakeSniMethod,
+                            options = listOf(
+                                "prefix_fake"  to "prefix_fake (default)",
+                                "postfix_fake" to "postfix_fake",
+                                "custom"       to "custom",
+                            ),
+                            onChange = { bs = bs.copy(fakeSniMethod = it); saved = false }
+                        )
+                        BToggleRow("Fragment Real ClientHello", "Also fragment the real handshake (not just the fake SNI)", bs.fakeSniFragmentReal) {
+                            bs = bs.copy(fakeSniFragmentReal = it); saved = false
+                        }
                     }
                 }
             }
