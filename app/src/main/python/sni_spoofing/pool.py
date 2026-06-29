@@ -476,6 +476,17 @@ class CombinationExplorer:
             "Evicted IP %s to quarantine (avg loss %.1f%%, %d pair(s) removed)",
             worst_ip, worst_avg * 100, len(keys_to_remove),
         )
+
+        # The IP(s) we just evicted may have been the *only* partner of
+        # one or more SNIs — if so, those SNIs are now "orphaned": still
+        # listed in _all_snis/the ledger, but with zero active pairs in
+        # stats. evict_weakest_sni only ever looks at self.stats, so an
+        # orphan can never be selected for eviction on its own and would
+        # sit there forever, invisible to both eviction and recycling.
+        # Sweep them into quarantine now so they get a chance to recover
+        # through the normal recycle path instead of leaking silently.
+        self._quarantine_orphaned_snis()
+
         return worst_ip
 
     def evict_weakest_sni(
@@ -546,9 +557,95 @@ class CombinationExplorer:
             "Evicted SNI %s to quarantine (avg loss %.1f%%, %d pair(s) removed)",
             worst_sni, worst_avg * 100, len(keys_to_remove),
         )
+
+        # Mirror of the cleanup in evict_weakest_ip: the SNI(s) we just
+        # evicted may have been the only partner of one or more IPs,
+        # leaving those IPs orphaned (still in _all_ips/the ledger, but
+        # with zero active pairs). Sweep them into quarantine too.
+        self._quarantine_orphaned_ips()
+
         return worst_sni
 
     # ------------------------------------------------------------------
+    # Orphan sweeping — catches IPs/SNIs left with zero active pairs
+    # ------------------------------------------------------------------
+
+    def _quarantine_orphaned_ips(self) -> int:
+        """Move any IP with zero active pairs in ``stats`` into quarantine.
+
+        An IP becomes "orphaned" when every SNI it was paired with gets
+        evicted out from under it — it's still listed in ``_all_ips`` and
+        the origin ledger, but ``evict_weakest_ip`` can never select it
+        (that function only ever looks at ``self.stats``), so without this
+        sweep it would sit there forever: untracked, unrecyclable, and
+        invisible to both eviction and discovery's "already known" check.
+
+        Returns the number of IPs swept into quarantine.
+        """
+        with self._lock:
+            active_ips = {ip for (ip, _sni) in self.stats.keys()}
+            already_quarantined = set(self._ip_quarantine.keys())
+            orphans = [
+                ip for ip in self._all_ips
+                if ip not in active_ips and ip not in already_quarantined
+            ]
+            if not orphans:
+                return 0
+
+            for ip in orphans:
+                origin = self._ip_origin_ledger.get(ip, "static")
+                self._ip_quarantine[ip] = {
+                    "snis": [],
+                    "origin": origin,
+                    "evicted_at": time.monotonic(),
+                    "last_attempt": time.monotonic(),
+                    "attempts": 0,
+                }
+            self._all_ips = [ip for ip in self._all_ips if ip not in orphans]
+            self._unexplored = [k for k in self._unexplored if k[0] not in orphans]
+
+        if orphans:
+            logger.info(
+                "Quarantined %d orphaned IP(s) with zero active pairs: %s",
+                len(orphans), ", ".join(orphans),
+            )
+        return len(orphans)
+
+    def _quarantine_orphaned_snis(self) -> int:
+        """Move any SNI with zero active pairs in ``stats`` into quarantine.
+
+        Mirrors ``_quarantine_orphaned_ips`` exactly, on the SNI axis.
+
+        Returns the number of SNIs swept into quarantine.
+        """
+        with self._lock:
+            active_snis = {sni for (_ip, sni) in self.stats.keys()}
+            already_quarantined = set(self._sni_quarantine.keys())
+            orphans = [
+                sni for sni in self._all_snis
+                if sni not in active_snis and sni not in already_quarantined
+            ]
+            if not orphans:
+                return 0
+
+            for sni in orphans:
+                origin = self._sni_origin_ledger.get(sni, "static")
+                self._sni_quarantine[sni] = {
+                    "ips": [],
+                    "origin": origin,
+                    "evicted_at": time.monotonic(),
+                    "last_attempt": time.monotonic(),
+                    "attempts": 0,
+                }
+            self._all_snis = [sni for sni in self._all_snis if sni not in orphans]
+            self._unexplored = [k for k in self._unexplored if k[1] not in orphans]
+
+        if orphans:
+            logger.info(
+                "Quarantined %d orphaned SNI(s) with zero active pairs: %s",
+                len(orphans), ", ".join(orphans),
+            )
+        return len(orphans)
     # Origin lookup helpers — used when restoring/recycling pairs so the
     # correct origin tag (static/dynamic) is preserved even when the other
     # axis (IP or SNI) has since been evicted from self.stats.
@@ -650,6 +747,19 @@ class CombinationExplorer:
         Uses a fresh, temporary PairStats (no memory of the old failures)
         so a recovered IP is judged purely on its current behaviour — this
         is the "recycling" equivalent of starting the EMA from scratch.
+
+        IMPORTANT: if this IP had no recorded SNI partners when it was
+        quarantined (``info["snis"]`` is empty — e.g. it was orphaned by
+        ``_quarantine_orphaned_ips`` rather than evicted with a known
+        partner list), we deliberately do NOT fall back to pairing it with
+        *every* known SNI. Recovering an IP that had zero or one partner
+        and instantly cross-producing it with the entire SNI list (which
+        includes every static SNI from the config) is exactly what caused
+        the pair-count explosion seen in production — a handful of evicted
+        dynamic entities recycling back as full cross-products with the
+        static config. Instead, a single random SNI is picked just to
+        verify reachability, and only that one pair is restored; normal
+        discovery is left to find the IP additional partners over time.
         """
         with self._lock:
             info = self._ip_quarantine.get(ip)
@@ -657,13 +767,19 @@ class CombinationExplorer:
                 return False
             info["last_attempt"] = time.monotonic()
             info["attempts"] += 1
-            snis = info["snis"] or self._all_snis
+            snis = list(info["snis"])  # may be empty — see docstring above
             ip_origin = info.get("origin", "static")
 
-        # Probe with a throwaway PairStats — one SNI is enough to decide
-        # whether the IP itself is reachable again; if it is, all of its
-        # original SNI pairs are restored fresh.
-        probe_sni = snis[0] if snis else (self._all_snis[0] if self._all_snis else None)
+        # Pick a probe SNI: prefer one of the IP's original partners; if it
+        # had none recorded, pick a single random known SNI just to test
+        # reachability — never treat "no recorded partners" as "pair with
+        # all of them".
+        if snis:
+            probe_sni = snis[0]
+        elif self._all_snis:
+            probe_sni = random.choice(self._all_snis)
+        else:
+            probe_sni = None
         if probe_sni is None:
             return False
 
@@ -678,14 +794,16 @@ class CombinationExplorer:
             )
             return False
 
-        # Healthy — restore all original (ip, sni) pairs as brand-new
-        # PairStats objects (preserving each axis's own origin) so no stale
-        # EMA history carries over. Only restore pairs whose SNI is still
+        # Healthy — restore only the pairs we actually know about (the
+        # IP's original partner list, or just the single probe SNI if it
+        # had none) as brand-new PairStats objects, so no stale EMA
+        # history carries over. Only restore pairs whose SNI is still
         # active (not itself quarantined) — matches the "pair only with
         # IPs/SNIs that haven't been quarantined" rule used for discovery.
+        restore_snis = snis if snis else [probe_sni]
         with self._lock:
             del self._ip_quarantine[ip]
-            for sni in snis:
+            for sni in restore_snis:
                 if sni in self._sni_quarantine:
                     continue  # SNI itself is quarantined — don't pair with it
                 key = (ip, sni)
@@ -700,7 +818,7 @@ class CombinationExplorer:
 
         logger.info(
             "Recycled IP %s back into the pool (probe loss=%.1f%%, %d pair(s) restored)",
-            ip, trial.combined_loss_rate * 100, len(snis),
+            ip, trial.combined_loss_rate * 100, len(restore_snis),
         )
         return True
 
@@ -755,6 +873,14 @@ class CombinationExplorer:
 
         Uses a fresh, temporary PairStats so a recovered SNI is judged
         purely on its current behaviour.
+
+        IMPORTANT: mirrors ``_try_recycle_ip_one`` exactly — if this SNI had
+        no recorded IP partners when quarantined (``info["ips"]`` empty),
+        we do NOT fall back to pairing it with every known IP. That fallback
+        is exactly what caused the pair-count explosion seen in production:
+        a recycled dynamic SNI cross-producing with the entire static
+        CONNECT_IPS list. Instead, a single random IP is used just to
+        verify reachability, and only that one pair is restored.
         """
         with self._lock:
             info = self._sni_quarantine.get(sni)
@@ -762,10 +888,15 @@ class CombinationExplorer:
                 return False
             info["last_attempt"] = time.monotonic()
             info["attempts"] += 1
-            ips = info["ips"] or self._all_ips
+            ips = list(info["ips"])  # may be empty — see docstring above
             sni_origin = info.get("origin", "static")
 
-        probe_ip = ips[0] if ips else (self._all_ips[0] if self._all_ips else None)
+        if ips:
+            probe_ip = ips[0]
+        elif self._all_ips:
+            probe_ip = random.choice(self._all_ips)
+        else:
+            probe_ip = None
         if probe_ip is None:
             return False
 
@@ -779,13 +910,15 @@ class CombinationExplorer:
             )
             return False
 
-        # Healthy — restore all original (ip, sni) pairs as brand-new
-        # PairStats objects. Only restore pairs whose IP is still active
-        # (not itself quarantined) — same "no pairing with quarantined
-        # entries" rule applied on the SNI side.
+        # Healthy — restore only the pairs we actually know about (the
+        # SNI's original partner list, or just the single probe IP if it
+        # had none) as brand-new PairStats objects. Only restore pairs
+        # whose IP is still active (not itself quarantined) — same "no
+        # pairing with quarantined entries" rule applied on the SNI side.
+        restore_ips = ips if ips else [probe_ip]
         with self._lock:
             del self._sni_quarantine[sni]
-            for ip in ips:
+            for ip in restore_ips:
                 if ip in self._ip_quarantine:
                     continue  # IP itself is quarantined — don't pair with it
                 key = (ip, sni)
@@ -800,7 +933,7 @@ class CombinationExplorer:
 
         logger.info(
             "Recycled SNI %s back into the pool (probe loss=%.1f%%, %d pair(s) restored)",
-            sni, trial.combined_loss_rate * 100, len(ips),
+            sni, trial.combined_loss_rate * 100, len(restore_ips),
         )
         return True
 
@@ -1167,6 +1300,23 @@ class ActivePool:
                     "SNI recycle cycle %d: restored %d SNI(s) from quarantine (scope=%s)",
                     self._refresh_count, recovered_sni, self.sni_quarantine_scope,
                 )
+
+        # ── 7. Independent orphan sweep ──────────────────────────────────
+        # Belt-and-suspenders: evict_weakest_ip/evict_weakest_sni already
+        # sweep orphans created by their own eviction, but IPs/SNIs can also
+        # become orphaned through other paths (e.g. discovery's own cap
+        # eviction, or a sequence of events across multiple refresh cycles
+        # that this single call's sweep didn't catch). Running it
+        # unconditionally on every refresh ensures nothing accumulates
+        # silently — these calls are cheap no-ops when there's nothing to
+        # sweep.
+        ip_orphans = self.explorer._quarantine_orphaned_ips()
+        sni_orphans = self.explorer._quarantine_orphaned_snis()
+        if ip_orphans or sni_orphans:
+            logger.info(
+                "Orphan sweep: quarantined %d IP(s) and %d SNI(s) with zero active pairs",
+                ip_orphans, sni_orphans,
+            )
 
         self._log_pool("REFRESH")
 
