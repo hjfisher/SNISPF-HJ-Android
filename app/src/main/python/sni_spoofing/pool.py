@@ -655,11 +655,20 @@ class CombinationExplorer:
         """Authoritative lookup of a SNI's origin.
 
         Consults the permanent ledger first (set once, at the moment the
-        SNI first enters the pool, and never erased). Falling back to
-        scanning self.stats/self._sni_quarantine — which only reflects
-        *currently active or quarantined* pairs — previously caused
-        dynamic SNIs with zero active pairs at lookup time to be silently
-        misclassified as "static".
+        SNI first enters the pool, and never erased for static SNIs).
+        Falls back to scanning self.stats/self._sni_quarantine, which only
+        reflects *currently active or quarantined* entries.
+
+        If the SNI is found nowhere at all (no ledger entry, no active
+        pair, not quarantined), it is NOT a static SNI — every static SNI
+        from FAKE_SNIS is registered in the ledger at startup and nothing
+        ever removes a static entry from it. A SNI with absolutely no
+        trace anywhere can only be a dynamic one that was fully forgotten
+        by a cap-eviction path (e.g. SNIDiscovery's max_dynamic_snis cap),
+        which deliberately pops the ledger entry. Defaulting that case to
+        "static" would mislabel a recovered/recycled dynamic SNI as static
+        forever after, which is exactly the bug that inflated the
+        "Static SNIs" count far beyond what's in the config file.
         """
         if sni in self._sni_origin_ledger:
             return self._sni_origin_ledger[sni]
@@ -667,8 +676,8 @@ class CombinationExplorer:
             if s == sni:
                 return ps.sni_origin
         if sni in self._sni_quarantine:
-            return self._sni_quarantine[sni].get("origin", "static")
-        return "static"
+            return self._sni_quarantine[sni].get("origin", "dynamic")
+        return "dynamic"
 
     def _lookup_ip_origin(self, ip: str) -> str:
         """Authoritative lookup of an IP's origin — see _lookup_sni_origin."""
@@ -678,8 +687,8 @@ class CombinationExplorer:
             if i == ip:
                 return ps.ip_origin
         if ip in self._ip_quarantine:
-            return self._ip_quarantine[ip].get("origin", "static")
-        return "static"
+            return self._ip_quarantine[ip].get("origin", "dynamic")
+        return "dynamic"
 
     # ------------------------------------------------------------------
     # Recycling — randomly re-test quarantined IPs and bring back winners
