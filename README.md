@@ -84,7 +84,7 @@ Or copy the APK to your device and install manually (enable "Install from unknow
 
 ## Usage
 
-1. **Generate a config** at [SNISPF-HJ Configurator](https://hjfisher.github.io/SNISPF-HJ-Configurator/).
+1. **Generate a config** at [SNISPF-HJ-Config-Studio](https://hjfisher.github.io/SNISPF-HJ-Config-Studio/).
 2. Open the app and paste the config JSON into the **Config** tab.
 3. Tap **Start** — the app launches a foreground service that keeps the proxy running in the background.
 4. In your proxy client (v2ray, clash, etc.), set the upstream proxy to:
