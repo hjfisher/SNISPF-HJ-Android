@@ -26,25 +26,20 @@ import org.json.JSONObject
 
 // ── Data model ────────────────────────────────────────────────────────────────
 data class BuilderState(
-    // Mode
-    val singleMode: Boolean = false,
-    // Single
-    val singleIp: String = "",
-    val singleSni: String = "",
-    // Pool - IPs & SNIs
+    // Pool - IPs & SNIs (list inputs)
     val connectIps: List<String> = listOf("172.66.41.252", "108.162.196.145"),
     val fakeSnis: List<String> = listOf("github.com", "google.com"),
     // Pool settings
-    val activeSlots: Int = 3,
+    val activeSlots: Int = 10,
     val healthInterval: Int = 30,
-    val healthTimeout: Int = 3,
+    val healthTimeout: Int = 30,
     val probeCount: Int = 5,
     val lossThreshold: Float = 0.20f,
     val deadThreshold: Float = 0.80f,
     val drainTimeout: Int = 30,
     val maxDraining: Int = 5,
-    val evictEvery: Int = 3,
-    val evictCount: Int = 2,
+    val evictEvery: Int = 10,
+    val evictCount: Int = 10,
     val recycleEnabled: Boolean = true,
     val recycleEvery: Int = 6,
     val recycleBatch: Int = 2,
@@ -52,8 +47,8 @@ data class BuilderState(
     val recycleMaxQuarantine: Int = 100,
     val quarantineScope: String = "both",
     // SNI axis (symmetric to IP axis above)
-    val sniEvictEvery: Int = 3,
-    val sniEvictCount: Int = 2,
+    val sniEvictEvery: Int = 20,
+    val sniEvictCount: Int = 1,
     val sniRecycleEnabled: Boolean = true,
     val sniRecycleEvery: Int = 6,
     val sniRecycleBatch: Int = 2,
@@ -66,6 +61,14 @@ data class BuilderState(
     val fragmentStrategy: String = "sni_split",
     val fragmentDelay: Float = 0.10f,
     val fakeSniMethod: String = "prefix_fake",
+    // Custom upstream TLS cipherSuites (xray format, colon-separated names)
+    val cipherSuites: String = "",
+    // FinalMask TCP fragment rules (inline JSON array/object or file path)
+    val finalmaskTcp: String = "",
+    // MITM relay (tls-decrypt / tls-repack)
+    val mitmCertCn: String = "SNISPF-HJ",
+    val mitmAlpn: String = "h2, http/1.1",
+    val mitmUseClientSni: Boolean = false,
     // IP Discovery
     val dynamicDiscovery: Boolean = false,
     val discoveryBatch: Int = 100,
@@ -83,13 +86,6 @@ data class BuilderState(
     val sniDiscoveryTimeout: Float = 2.0f,
     val sniDiscoveryMinSuccess: Float = 0.50f,
     val maxDynamicSnis: Int = 100,
-    // Traffic Shaping (defeats flow-based DPI fingerprinting post-handshake)
-    val shapingEnabled: Boolean = false,
-    val shapingMinChunk: Int = 200,
-    val shapingMaxChunk: Int = 1200,
-    val shapingMinDelayMs: Int = 5,
-    val shapingMaxDelayMs: Int = 40,
-    val shapingDirection: String = "download_only",
     // Network
     val listenHost: String = "0.0.0.0",
     val listenPort: Int = 40443,
@@ -107,11 +103,21 @@ fun BuilderState.toJson(): String {
     obj.put("FAKE_SNI_METHOD",   fakeSniMethod)
     obj.put("FAKE_SNI_FRAGMENT_REAL", fakeSniFragmentReal)
 
-    if (singleMode) {
-        if (singleIp.isNotBlank())  obj.put("CONNECT_IP", singleIp.trim())
-        if (singleSni.isNotBlank()) obj.put("FAKE_SNI",   singleSni.trim())
-    } else {
-        obj.put("ACTIVE_SLOTS",          activeSlots)
+    // Custom cipherSuites / FinalMask TCP / MITM relay settings
+    if (cipherSuites.isNotBlank()) obj.put("CIPHER_SUITES", cipherSuites.trim())
+    if (finalmaskTcp.isNotBlank()) {
+        val fm = finalmaskTcp.trim()
+        try { obj.put("FINALMASK_TCP", org.json.JSONObject(fm)) }
+        catch (_: Exception) {
+            try { obj.put("FINALMASK_TCP", org.json.JSONArray(fm)) }
+            catch (_: Exception) { obj.put("FINALMASK_TCP", fm) }
+        }
+    }
+    obj.put("MITM_CERT_CN",        mitmCertCn.ifBlank { "SNISPF-HJ" })
+    obj.put("MITM_ALPN",           mitmAlpn.split(",").map { it.trim() }.filter { it.isNotBlank() })
+    obj.put("MITM_USE_CLIENT_SNI", mitmUseClientSni)
+
+    obj.put("ACTIVE_SLOTS",          activeSlots)
         obj.put("HEALTH_CHECK_INTERVAL", healthInterval)
         obj.put("HEALTH_CHECK_TIMEOUT",  healthTimeout)
         obj.put("PROBE_COUNT",           probeCount)
@@ -154,54 +160,43 @@ fun BuilderState.toJson(): String {
             obj.put("SNI_DISCOVERY_MIN_SUCCESS",      String.format("%.2f", sniDiscoveryMinSuccess).toDouble())
             obj.put("MAX_DYNAMIC_SNIS",               maxDynamicSnis)
         }
-        obj.put("TRAFFIC_SHAPING_ENABLED", shapingEnabled)
-        if (shapingEnabled) {
-            obj.put("SHAPING_MIN_CHUNK",     shapingMinChunk)
-            obj.put("SHAPING_MAX_CHUNK",     shapingMaxChunk)
-            obj.put("SHAPING_MIN_DELAY_MS",  shapingMinDelayMs.toDouble())
-            obj.put("SHAPING_MAX_DELAY_MS",  shapingMaxDelayMs.toDouble())
-            obj.put("SHAPING_DIRECTION",     shapingDirection)
-        }
         val ipsArr = JSONArray(); connectIps.forEach { ipsArr.put(it) }
         val snisArr = JSONArray(); fakeSnis.forEach { snisArr.put(it) }
         obj.put("CONNECT_IPS", ipsArr)
         obj.put("FAKE_SNIS",   snisArr)
-    }
     return obj.toString(2)
 }
 
 fun builderFromJson(json: String): BuilderState {
     return try {
         val o = JSONObject(json)
-        val singleMode = !o.has("CONNECT_IPS")
         val ips  = mutableListOf<String>()
         val snis = mutableListOf<String>()
         if (o.has("CONNECT_IPS")) { val a = o.getJSONArray("CONNECT_IPS"); repeat(a.length()) { ips.add(a.getString(it)) } }
+        else { val v = o.optString("CONNECT_IP", ""); if (v.isNotBlank()) ips.add(v) }
         if (o.has("FAKE_SNIS"))   { val a = o.getJSONArray("FAKE_SNIS");   repeat(a.length()) { snis.add(a.getString(it)) } }
+        else { val v = o.optString("FAKE_SNI", ""); if (v.isNotBlank()) snis.add(v) }
         BuilderState(
-            singleMode       = singleMode,
-            singleIp         = o.optString("CONNECT_IP", ""),
-            singleSni        = o.optString("FAKE_SNI", ""),
             connectIps       = if (ips.isEmpty()) listOf("172.66.41.252") else ips,
             fakeSnis         = if (snis.isEmpty()) listOf("github.com") else snis,
-            activeSlots      = o.optInt("ACTIVE_SLOTS", 3),
+            activeSlots      = o.optInt("ACTIVE_SLOTS", 10),
             healthInterval   = o.optInt("HEALTH_CHECK_INTERVAL", 30),
-            healthTimeout    = o.optInt("HEALTH_CHECK_TIMEOUT", 3),
+            healthTimeout    = o.optInt("HEALTH_CHECK_TIMEOUT", 30),
             probeCount       = o.optInt("PROBE_COUNT", 5),
             lossThreshold    = o.optDouble("LOSS_THRESHOLD", 0.20).toFloat(),
             deadThreshold    = o.optDouble("DEAD_THRESHOLD", 0.80).toFloat(),
             drainTimeout     = o.optInt("DRAIN_TIMEOUT", 30),
             maxDraining      = o.optInt("MAX_DRAINING", 5),
-            evictEvery       = o.optInt("EVICT_EVERY", 3),
-            evictCount       = o.optInt("EVICT_COUNT", 2),
+            evictEvery       = o.optInt("EVICT_EVERY", 10),
+            evictCount       = o.optInt("EVICT_COUNT", 10),
             recycleEnabled       = o.optBoolean("RECYCLE_ENABLED", true),
             recycleEvery         = o.optInt("RECYCLE_EVERY", 6),
             recycleBatch         = o.optInt("RECYCLE_BATCH", 2),
             recycleMinCooldown   = o.optInt("RECYCLE_MIN_COOLDOWN", 180),
             recycleMaxQuarantine = o.optInt("RECYCLE_MAX_QUARANTINE", 100),
             quarantineScope      = o.optString("QUARANTINE_SCOPE", "both"),
-            sniEvictEvery         = o.optInt("SNI_EVICT_EVERY", 3),
-            sniEvictCount         = o.optInt("SNI_EVICT_COUNT", 2),
+            sniEvictEvery         = o.optInt("SNI_EVICT_EVERY", 20),
+            sniEvictCount         = o.optInt("SNI_EVICT_COUNT", 1),
             sniRecycleEnabled     = o.optBoolean("SNI_RECYCLE_ENABLED", true),
             sniRecycleEvery       = o.optInt("SNI_RECYCLE_EVERY", 6),
             sniRecycleBatch       = o.optInt("SNI_RECYCLE_BATCH", 2),
@@ -228,12 +223,18 @@ fun builderFromJson(json: String): BuilderState {
             sniDiscoveryTimeout      = o.optDouble("SNI_DISCOVERY_TIMEOUT", 2.0).toFloat(),
             sniDiscoveryMinSuccess   = o.optDouble("SNI_DISCOVERY_MIN_SUCCESS", 0.50).toFloat(),
             maxDynamicSnis           = o.optInt("MAX_DYNAMIC_SNIS", 100),
-            shapingEnabled    = o.optBoolean("TRAFFIC_SHAPING_ENABLED", false),
-            shapingMinChunk   = o.optInt("SHAPING_MIN_CHUNK", 200),
-            shapingMaxChunk   = o.optInt("SHAPING_MAX_CHUNK", 1200),
-            shapingMinDelayMs = o.optDouble("SHAPING_MIN_DELAY_MS", 5.0).toInt(),
-            shapingMaxDelayMs = o.optDouble("SHAPING_MAX_DELAY_MS", 40.0).toInt(),
-            shapingDirection  = o.optString("SHAPING_DIRECTION", "download_only"),
+            cipherSuites     = o.optString("CIPHER_SUITES", ""),
+            finalmaskTcp     = if (o.isNull("FINALMASK_TCP") || !o.has("FINALMASK_TCP")) "" else o.get("FINALMASK_TCP").toString(),
+            mitmCertCn       = o.optString("MITM_CERT_CN", "SNISPF-HJ"),
+            mitmAlpn         = run {
+                val v = o.opt("MITM_ALPN")
+                when (v) {
+                    null -> "h2, http/1.1"
+                    is JSONArray -> (0 until v.length()).joinToString(", ") { v.getString(it) }
+                    else -> v.toString()
+                }
+            },
+            mitmUseClientSni = o.optBoolean("MITM_USE_CLIENT_SNI", false),
             listenHost       = o.optString("LISTEN_HOST", "0.0.0.0"),
             listenPort       = o.optInt("LISTEN_PORT", 40443),
             connectPort      = o.optInt("CONNECT_PORT", 443),
@@ -280,228 +281,22 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // ── Mode ──────────────────────────────────────────────────────────
+            // ── 1. Network ────────────────────────────────────────────────────
             item {
-                BSection("Mode", Icons.Default.Tune) {
-                    BToggleRow(
-                        label    = "Single-Pair mode (Legacy)",
-                        sublabel = "Disable pool — use one IP + SNI directly",
-                        checked  = bs.singleMode,
-                        onChange = { bs = bs.copy(singleMode = it); saved = false }
-                    )
-                }
-            }
-
-            // ── Single fields ─────────────────────────────────────────────────
-            if (bs.singleMode) {
-                item {
-                    BSection("Single Target", Icons.Default.Link) {
-                        BTextField("Connect IP", bs.singleIp, "172.66.41.252", KeyboardType.Ascii) {
-                            bs = bs.copy(singleIp = it); saved = false
-                        }
-                        BTextField("Fake SNI", bs.singleSni, "cdnjs.cloudflare.com", KeyboardType.Ascii) {
-                            bs = bs.copy(singleSni = it); saved = false
-                        }
+                BSection("Network", Icons.Default.Wifi) {
+                    BTextField("Listen Host", bs.listenHost, "0.0.0.0", KeyboardType.Ascii) {
+                        bs = bs.copy(listenHost = it); saved = false
+                    }
+                    BNumberRow("Listen Port", bs.listenPort, 1024, 65535) {
+                        bs = bs.copy(listenPort = it); saved = false
+                    }
+                    BNumberRow("Connect Port", bs.connectPort, 1, 65535) {
+                        bs = bs.copy(connectPort = it); saved = false
                     }
                 }
             }
 
-            // ── Pool: IPs & SNIs ──────────────────────────────────────────────
-            if (!bs.singleMode) {
-                item {
-                    BSection("IP List  (${bs.connectIps.size} IPs)", Icons.Default.Dns) {
-                        BListEditor(
-                            items       = bs.connectIps,
-                            placeholder = "e.g. 172.66.41.252",
-                            keyboardType = KeyboardType.Ascii,
-                            onChange    = { bs = bs.copy(connectIps = it); saved = false }
-                        )
-                    }
-                }
-
-                item {
-                    BSection("SNI List  (${bs.fakeSnis.size} SNIs)", Icons.Default.Tag) {
-                        BListEditor(
-                            items       = bs.fakeSnis,
-                            placeholder = "e.g. github.com",
-                            keyboardType = KeyboardType.Ascii,
-                            onChange    = { bs = bs.copy(fakeSnis = it); saved = false }
-                        )
-                    }
-                }
-
-                // ── Pool settings ─────────────────────────────────────────────
-                item {
-                    BSection("Pool Settings", Icons.Default.Hub) {
-                        BSliderRow("Active Slots", bs.activeSlots, 1, 20, "{v} slots") {
-                            bs = bs.copy(activeSlots = it); saved = false
-                        }
-                        BNumberRow("Health Check Interval (s)", bs.healthInterval, 5, 300) {
-                            bs = bs.copy(healthInterval = it); saved = false
-                        }
-                        BNumberRow("Health Check Timeout (s)", bs.healthTimeout, 1, 30) {
-                            bs = bs.copy(healthTimeout = it); saved = false
-                        }
-                        BNumberRow("Probe Count", bs.probeCount, 1, 20) {
-                            bs = bs.copy(probeCount = it); saved = false
-                        }
-                        BSliderRow("Loss Threshold", (bs.lossThreshold * 100).toInt(), 0, 100, "{v}%") {
-                            bs = bs.copy(lossThreshold = it / 100f); saved = false
-                        }
-                        BSliderRow("Dead Threshold", (bs.deadThreshold * 100).toInt(), 0, 100, "{v}%") {
-                            bs = bs.copy(deadThreshold = it / 100f); saved = false
-                        }
-                        BNumberRow("Drain Timeout (s)", bs.drainTimeout, 5, 300) {
-                            bs = bs.copy(drainTimeout = it); saved = false
-                        }
-                        BNumberRow("Max Draining", bs.maxDraining, 1, 50) {
-                            bs = bs.copy(maxDraining = it); saved = false
-                        }
-                        BNumberRow("Evict Every (cycles)", bs.evictEvery, 1, 20) {
-                            bs = bs.copy(evictEvery = it); saved = false
-                        }
-                        BNumberRow("Evict Count", bs.evictCount, 1, 20) {
-                            bs = bs.copy(evictCount = it); saved = false
-                        }
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                        BToggleRow("Recycling", "Re-test evicted IPs and bring back the healthy ones", bs.recycleEnabled) {
-                            bs = bs.copy(recycleEnabled = it); saved = false
-                        }
-                        if (bs.recycleEnabled) {
-                            BNumberRow("Recycle Every (cycles)", bs.recycleEvery, 1, 50) {
-                                bs = bs.copy(recycleEvery = it); saved = false
-                            }
-                            BNumberRow("Recycle Batch", bs.recycleBatch, 1, 20) {
-                                bs = bs.copy(recycleBatch = it); saved = false
-                            }
-                            BNumberRow("Min Cooldown (s)", bs.recycleMinCooldown, 10, 3600) {
-                                bs = bs.copy(recycleMinCooldown = it); saved = false
-                            }
-                            BNumberRow("Max Quarantine Size", bs.recycleMaxQuarantine, 10, 1000) {
-                                bs = bs.copy(recycleMaxQuarantine = it); saved = false
-                            }
-                        }
-                        BDropdown(
-                            label = "Quarantine Scope",
-                            value = bs.quarantineScope,
-                            options = listOf(
-                                "both"    to "both — static + dynamic IPs",
-                                "static"  to "static — CONNECT_IPS only",
-                                "dynamic" to "dynamic — discovered IPs only",
-                            ),
-                            onChange = { bs = bs.copy(quarantineScope = it); saved = false }
-                        )
-                    }
-                }
-
-                item {
-                    BSection("SNI Pool Settings  (symmetric to IP axis)", Icons.Default.Tag) {
-                        BNumberRow("SNI Evict Every (cycles)", bs.sniEvictEvery, 1, 20) {
-                            bs = bs.copy(sniEvictEvery = it); saved = false
-                        }
-                        BNumberRow("SNI Evict Count", bs.sniEvictCount, 1, 20) {
-                            bs = bs.copy(sniEvictCount = it); saved = false
-                        }
-                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                        BToggleRow("SNI Recycling", "Re-test evicted SNIs and bring back healthy ones", bs.sniRecycleEnabled) {
-                            bs = bs.copy(sniRecycleEnabled = it); saved = false
-                        }
-                        if (bs.sniRecycleEnabled) {
-                            BNumberRow("SNI Recycle Every (cycles)", bs.sniRecycleEvery, 1, 50) {
-                                bs = bs.copy(sniRecycleEvery = it); saved = false
-                            }
-                            BNumberRow("SNI Recycle Batch", bs.sniRecycleBatch, 1, 20) {
-                                bs = bs.copy(sniRecycleBatch = it); saved = false
-                            }
-                            BNumberRow("SNI Min Cooldown (s)", bs.sniRecycleMinCooldown, 10, 3600) {
-                                bs = bs.copy(sniRecycleMinCooldown = it); saved = false
-                            }
-                            BNumberRow("SNI Max Quarantine Size", bs.sniRecycleMaxQuarantine, 10, 1000) {
-                                bs = bs.copy(sniRecycleMaxQuarantine = it); saved = false
-                            }
-                        }
-                        BDropdown(
-                            label = "SNI Quarantine Scope",
-                            value = bs.sniQuarantineScope,
-                            options = listOf(
-                                "both"    to "both — static + dynamic SNIs",
-                                "static"  to "static — FAKE_SNIS only",
-                                "dynamic" to "dynamic — discovered SNIs only",
-                            ),
-                            onChange = { bs = bs.copy(sniQuarantineScope = it); saved = false }
-                        )
-                    }
-                }
-
-                // ── IP Discovery ──────────────────────────────────────────────
-                item {
-                    BSection("IP Discovery", Icons.Default.TravelExplore) {
-                        BToggleRow(
-                            label    = "Dynamic IP Discovery",
-                            sublabel = "Scan Cloudflare CIDRs at runtime to find new IPs",
-                            checked  = bs.dynamicDiscovery,
-                            onChange = { bs = bs.copy(dynamicDiscovery = it); saved = false }
-                        )
-                        if (bs.dynamicDiscovery) {
-                            BNumberRow("Batch Size", bs.discoveryBatch, 10, 500) {
-                                bs = bs.copy(discoveryBatch = it); saved = false
-                            }
-                            BNumberRow("Scan Interval (s)", bs.discoveryInterval, 30, 3600) {
-                                bs = bs.copy(discoveryInterval = it); saved = false
-                            }
-                            BNumberRow("Probe Tries per IP", bs.discoveryProbeTries, 1, 10) {
-                                bs = bs.copy(discoveryProbeTries = it); saved = false
-                            }
-                            BNumberRow("Probe Timeout (s)", bs.discoveryTimeout.toInt(), 1, 10) {
-                                bs = bs.copy(discoveryTimeout = it.toFloat()); saved = false
-                            }
-                            BSliderRow("Min Success Rate", (bs.discoveryMinSuccess * 100).toInt(), 0, 100, "{v}%") {
-                                bs = bs.copy(discoveryMinSuccess = it / 100f); saved = false
-                            }
-                            BSliderRow("Max IPs to collect", bs.discoveryMaxIps, 10, 500, "{v} IPs") {
-                                bs = bs.copy(discoveryMaxIps = it); saved = false
-                            }
-                        }
-                    }
-                }
-
-                // ── SNI Discovery (mirrors IP Discovery) ────────────────────────
-                item {
-                    BSection("SNI Discovery", Icons.Default.TravelExplore) {
-                        BToggleRow(
-                            label    = "Dynamic SNI Discovery",
-                            sublabel = "Sample Tranco/Umbrella/Majestic domain lists to find new Cloudflare-hosted SNIs",
-                            checked  = bs.sniDynamicDiscovery,
-                            onChange = { bs = bs.copy(sniDynamicDiscovery = it); saved = false }
-                        )
-                        if (bs.sniDynamicDiscovery) {
-                            BNumberRow("Batch Size", bs.sniDiscoveryBatch, 10, 500) {
-                                bs = bs.copy(sniDiscoveryBatch = it); saved = false
-                            }
-                            BNumberRow("Scan Interval (s)", bs.sniDiscoveryInterval, 30, 3600) {
-                                bs = bs.copy(sniDiscoveryInterval = it); saved = false
-                            }
-                            BNumberRow("Source Refresh (s)", bs.sniSourceRefreshInterval, 300, 86400) {
-                                bs = bs.copy(sniSourceRefreshInterval = it); saved = false
-                            }
-                            BNumberRow("Probe Tries per SNI", bs.sniDiscoveryProbeTries, 1, 10) {
-                                bs = bs.copy(sniDiscoveryProbeTries = it); saved = false
-                            }
-                            BNumberRow("Probe Timeout (s)", bs.sniDiscoveryTimeout.toInt(), 1, 10) {
-                                bs = bs.copy(sniDiscoveryTimeout = it.toFloat()); saved = false
-                            }
-                            BSliderRow("Min Success Rate", (bs.sniDiscoveryMinSuccess * 100).toInt(), 0, 100, "{v}%") {
-                                bs = bs.copy(sniDiscoveryMinSuccess = it / 100f); saved = false
-                            }
-                            BSliderRow("Max Dynamic SNIs", bs.maxDynamicSnis, 10, 500, "{v} SNIs") {
-                                bs = bs.copy(maxDynamicSnis = it); saved = false
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ── Bypass ────────────────────────────────────────────────────────
+            // ── 2. Method ──────────────────────────────────────────────────────
             item {
                 BSection("Bypass Method", Icons.Default.Shield) {
                     BDropdown(
@@ -512,9 +307,16 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                             "fragment"  to "Fragment — TLS fragmentation",
                             "fake_sni"  to "Fake SNI — SNI substitution",
                             "combined"  to "Combined — Fragment + Fake SNI",
+                            "mitm"      to "MITM — TLS-terminating relay (tls-decrypt/tls-repack)",
                         ),
                         onChange = { bs = bs.copy(bypassMethod = it); saved = false }
                     )
+                }
+            }
+
+            // ── 3. Method Parameters ───────────────────────────────────────────
+            item {
+                BSection("Method Parameters", Icons.Default.Tune) {
                     if (bs.bypassMethod == "direct") {
                         Text(
                             "Use when the upstream already handles censorship circumvention itself " +
@@ -525,7 +327,29 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                             lineHeight = 16.sp,
                         )
                     }
-                    if (bs.bypassMethod != "direct") {
+                    if (bs.bypassMethod == "mitm") {
+                        Text(
+                            "Builds its own self-signed SSL, terminates the client TLS session and " +
+                            "re-encrypts to the real upstream with a fresh ClientHello (custom cipherSuites / " +
+                            "ALPN / FinalMask). The pool is IP-only. Pin the cert SHA-256 shown in the Log tab.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 16.sp,
+                        )
+                        BTextField("MITM Cert CN", bs.mitmCertCn, "SNISPF-HJ", KeyboardType.Ascii) {
+                            bs = bs.copy(mitmCertCn = it); saved = false
+                        }
+                        BTextField("MITM ALPN", bs.mitmAlpn, "h2, http/1.1", KeyboardType.Ascii) {
+                            bs = bs.copy(mitmAlpn = it); saved = false
+                        }
+                        BToggleRow(
+                            label    = "Use Client SNI Upstream",
+                            sublabel = "Forward the client's real SNI upstream instead of the decoy (recommended for VLESS/WS workers)",
+                            checked  = bs.mitmUseClientSni,
+                            onChange = { bs = bs.copy(mitmUseClientSni = it); saved = false }
+                        )
+                    }
+                    if (bs.bypassMethod == "fragment" || bs.bypassMethod == "fake_sni" || bs.bypassMethod == "combined") {
                         BDropdown(
                             label   = "Fragment Strategy",
                             value   = bs.fragmentStrategy,
@@ -557,61 +381,213 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                             bs = bs.copy(fakeSniFragmentReal = it); saved = false
                         }
                     }
-                }
-            }
-
-            // ── Traffic Shaping ───────────────────────────────────────────────
-            item {
-                BSection("Traffic Shaping", Icons.Default.GraphicEq) {
-                    BToggleRow(
-                        label    = "Traffic Shaping",
-                        sublabel = "Reshapes post-handshake relay traffic so it doesn't look like a flat proxy tunnel — defeats flow-based DPI",
-                        checked  = bs.shapingEnabled,
-                        onChange = { bs = bs.copy(shapingEnabled = it); saved = false }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    BTextField("Cipher Suites", bs.cipherSuites, "TLS_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", KeyboardType.Ascii) {
+                        bs = bs.copy(cipherSuites = it); saved = false
+                    }
+                    Text(
+                        "Custom upstream TLS cipher suites (xray cipherSuites format, colon-separated IANA names). Used in MITM mode and for the raw-injector fake hello. Leave empty for built-in defaults.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 16.sp,
                     )
-                    if (bs.shapingEnabled) {
-                        BDropdown(
-                            label = "Direction",
-                            value = bs.shapingDirection,
-                            options = listOf(
-                                "download_only" to "download_only — shape server→client only (default)",
-                                "both"          to "both — shape both directions",
-                            ),
-                            onChange = { bs = bs.copy(shapingDirection = it); saved = false }
-                        )
-                        BNumberRow("Min Chunk (bytes)", bs.shapingMinChunk, 1, 8192) {
-                            bs = bs.copy(shapingMinChunk = it); saved = false
+                    BMultiLineField("FinalMask TCP", bs.finalmaskTcp, """[{"type":"fragment","settings":{"packets":"tlshello","lengths":["50-100"],"delays":["1-10"],"maxSplit":"10"}}]""") {
+                        bs = bs.copy(finalmaskTcp = it); saved = false
+                    }
+                    Text(
+                        "FinalMask TCP fragmentation (faithful xray port) — inline JSON array/object of fragment rules, or a path to such a JSON file. Masks the initial ClientHello and C→S traffic. Leave empty to disable.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 16.sp,
+                    )
+                }
+            }
+
+            // ── 4. Pool Settings ───────────────────────────────────────────────
+            item {
+                BSection("Pool Settings", Icons.Default.Hub) {
+                    BSliderRow("Active Slots", bs.activeSlots, 1, 20, "{v} slots") {
+                        bs = bs.copy(activeSlots = it); saved = false
+                    }
+                    BNumberRow("Health Check Interval (s)", bs.healthInterval, 5, 300) {
+                        bs = bs.copy(healthInterval = it); saved = false
+                    }
+                    BNumberRow("Health Check Timeout (s)", bs.healthTimeout, 1, 30) {
+                        bs = bs.copy(healthTimeout = it); saved = false
+                    }
+                    BNumberRow("Probe Count", bs.probeCount, 1, 20) {
+                        bs = bs.copy(probeCount = it); saved = false
+                    }
+                    BSliderRow("Loss Threshold", (bs.lossThreshold * 100).toInt(), 0, 100, "{v}%") {
+                        bs = bs.copy(lossThreshold = it / 100f); saved = false
+                    }
+                    BSliderRow("Dead Threshold", (bs.deadThreshold * 100).toInt(), 0, 100, "{v}%") {
+                        bs = bs.copy(deadThreshold = it / 100f); saved = false
+                    }
+                    BNumberRow("Drain Timeout (s)", bs.drainTimeout, 5, 300) {
+                        bs = bs.copy(drainTimeout = it); saved = false
+                    }
+                    BNumberRow("Max Draining", bs.maxDraining, 1, 50) {
+                        bs = bs.copy(maxDraining = it); saved = false
+                    }
+                    BNumberRow("Evict Every (cycles)", bs.evictEvery, 1, 20) {
+                        bs = bs.copy(evictEvery = it); saved = false
+                    }
+                    BNumberRow("Evict Count", bs.evictCount, 1, 20) {
+                        bs = bs.copy(evictCount = it); saved = false
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    BToggleRow("Recycling", "Re-test evicted IPs and bring back the healthy ones", bs.recycleEnabled) {
+                        bs = bs.copy(recycleEnabled = it); saved = false
+                    }
+                    if (bs.recycleEnabled) {
+                        BNumberRow("Recycle Every (cycles)", bs.recycleEvery, 1, 50) {
+                            bs = bs.copy(recycleEvery = it); saved = false
                         }
-                        BNumberRow("Max Chunk (bytes)", bs.shapingMaxChunk, bs.shapingMinChunk, 16384) {
-                            bs = bs.copy(shapingMaxChunk = it); saved = false
+                        BNumberRow("Recycle Batch", bs.recycleBatch, 1, 20) {
+                            bs = bs.copy(recycleBatch = it); saved = false
                         }
-                        BNumberRow("Min Delay (ms)", bs.shapingMinDelayMs, 0, 1000) {
-                            bs = bs.copy(shapingMinDelayMs = it); saved = false
+                        BNumberRow("Min Cooldown (s)", bs.recycleMinCooldown, 10, 3600) {
+                            bs = bs.copy(recycleMinCooldown = it); saved = false
                         }
-                        BNumberRow("Max Delay (ms)", bs.shapingMaxDelayMs, bs.shapingMinDelayMs, 2000) {
-                            bs = bs.copy(shapingMaxDelayMs = it); saved = false
+                        BNumberRow("Max Quarantine Size", bs.recycleMaxQuarantine, 10, 1000) {
+                            bs = bs.copy(recycleMaxQuarantine = it); saved = false
                         }
-                        Text(
-                            "Adds latency — only enable on networks known to fingerprint flow patterns, not just the handshake.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            lineHeight = 16.sp,
-                        )
+                    }
+                    BDropdown(
+                        label = "Quarantine Scope",
+                        value = bs.quarantineScope,
+                        options = listOf(
+                            "both"    to "both — static + dynamic IPs",
+                            "static"  to "static — CONNECT_IPS only",
+                            "dynamic" to "dynamic — discovered IPs only",
+                        ),
+                        onChange = { bs = bs.copy(quarantineScope = it); saved = false }
+                    )
+
+                    // ── SNI axis (only used by fake_sni / combined) ─────────────
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text(
+                        "SNI axis (symmetric to the IP axis) — applies only to fake_sni / combined, " +
+                        "where the pool keeps a full IP × SNI grid. Fragment, direct and mitm use an IP-only pool.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 16.sp,
+                    )
+                    BNumberRow("SNI Evict Every (cycles)", bs.sniEvictEvery, 1, 20) {
+                        bs = bs.copy(sniEvictEvery = it); saved = false
+                    }
+                    BNumberRow("SNI Evict Count", bs.sniEvictCount, 1, 20) {
+                        bs = bs.copy(sniEvictCount = it); saved = false
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    BToggleRow("SNI Recycling", "Re-test evicted SNIs and bring back healthy ones", bs.sniRecycleEnabled) {
+                        bs = bs.copy(sniRecycleEnabled = it); saved = false
+                    }
+                    if (bs.sniRecycleEnabled) {
+                        BNumberRow("SNI Recycle Every (cycles)", bs.sniRecycleEvery, 1, 50) {
+                            bs = bs.copy(sniRecycleEvery = it); saved = false
+                        }
+                        BNumberRow("SNI Recycle Batch", bs.sniRecycleBatch, 1, 20) {
+                            bs = bs.copy(sniRecycleBatch = it); saved = false
+                        }
+                        BNumberRow("SNI Min Cooldown (s)", bs.sniRecycleMinCooldown, 10, 3600) {
+                            bs = bs.copy(sniRecycleMinCooldown = it); saved = false
+                        }
+                        BNumberRow("SNI Max Quarantine Size", bs.sniRecycleMaxQuarantine, 10, 1000) {
+                            bs = bs.copy(sniRecycleMaxQuarantine = it); saved = false
+                        }
+                    }
+                    BDropdown(
+                        label = "SNI Quarantine Scope",
+                        value = bs.sniQuarantineScope,
+                        options = listOf(
+                            "both"    to "both — static + dynamic SNIs",
+                            "static"  to "static — FAKE_SNIS only",
+                            "dynamic" to "dynamic — discovered SNIs only",
+                        ),
+                        onChange = { bs = bs.copy(sniQuarantineScope = it); saved = false }
+                    )
+                }
+            }
+
+            // ── 5. IPs & IP Discovery ──────────────────────────────────────────
+            item {
+                BSection("IPs & IP Discovery  (${bs.connectIps.size} IPs)", Icons.Default.Dns) {
+                    BListEditor(
+                        items       = bs.connectIps,
+                        placeholder = "e.g. 172.66.41.252",
+                        keyboardType = KeyboardType.Ascii,
+                        onChange    = { bs = bs.copy(connectIps = it); saved = false }
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    BToggleRow(
+                        label    = "Dynamic IP Discovery",
+                        sublabel = "Scan Cloudflare CIDRs at runtime to find new IPs",
+                        checked  = bs.dynamicDiscovery,
+                        onChange = { bs = bs.copy(dynamicDiscovery = it); saved = false }
+                    )
+                    if (bs.dynamicDiscovery) {
+                        BNumberRow("Batch Size", bs.discoveryBatch, 10, 500) {
+                            bs = bs.copy(discoveryBatch = it); saved = false
+                        }
+                        BNumberRow("Scan Interval (s)", bs.discoveryInterval, 30, 3600) {
+                            bs = bs.copy(discoveryInterval = it); saved = false
+                        }
+                        BNumberRow("Probe Tries per IP", bs.discoveryProbeTries, 1, 10) {
+                            bs = bs.copy(discoveryProbeTries = it); saved = false
+                        }
+                        BNumberRow("Probe Timeout (s)", bs.discoveryTimeout.toInt(), 1, 10) {
+                            bs = bs.copy(discoveryTimeout = it.toFloat()); saved = false
+                        }
+                        BSliderRow("Min Success Rate", (bs.discoveryMinSuccess * 100).toInt(), 0, 100, "{v}%") {
+                            bs = bs.copy(discoveryMinSuccess = it / 100f); saved = false
+                        }
+                        BSliderRow("Max IPs to collect", bs.discoveryMaxIps, 10, 500, "{v} IPs") {
+                            bs = bs.copy(discoveryMaxIps = it); saved = false
+                        }
                     }
                 }
             }
 
-            // ── Network ───────────────────────────────────────────────────────
+            // ── 6. SNIs & SNI Discovery ────────────────────────────────────────
             item {
-                BSection("Network", Icons.Default.Wifi) {
-                    BTextField("Listen Host", bs.listenHost, "0.0.0.0", KeyboardType.Ascii) {
-                        bs = bs.copy(listenHost = it); saved = false
-                    }
-                    BNumberRow("Listen Port", bs.listenPort, 1024, 65535) {
-                        bs = bs.copy(listenPort = it); saved = false
-                    }
-                    BNumberRow("Connect Port", bs.connectPort, 1, 65535) {
-                        bs = bs.copy(connectPort = it); saved = false
+                BSection("SNIs & SNI Discovery  (${bs.fakeSnis.size} SNIs)", Icons.Default.Tag) {
+                    BListEditor(
+                        items       = bs.fakeSnis,
+                        placeholder = "e.g. github.com",
+                        keyboardType = KeyboardType.Ascii,
+                        onChange    = { bs = bs.copy(fakeSnis = it); saved = false }
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    BToggleRow(
+                        label    = "Dynamic SNI Discovery",
+                        sublabel = "Sample Tranco/Umbrella/Majestic domain lists to find new Cloudflare-hosted SNIs",
+                        checked  = bs.sniDynamicDiscovery,
+                        onChange = { bs = bs.copy(sniDynamicDiscovery = it); saved = false }
+                    )
+                    if (bs.sniDynamicDiscovery) {
+                        BNumberRow("Batch Size", bs.sniDiscoveryBatch, 10, 500) {
+                            bs = bs.copy(sniDiscoveryBatch = it); saved = false
+                        }
+                        BNumberRow("Scan Interval (s)", bs.sniDiscoveryInterval, 30, 3600) {
+                            bs = bs.copy(sniDiscoveryInterval = it); saved = false
+                        }
+                        BNumberRow("Source Refresh (s)", bs.sniSourceRefreshInterval, 300, 86400) {
+                            bs = bs.copy(sniSourceRefreshInterval = it); saved = false
+                        }
+                        BNumberRow("Probe Tries per SNI", bs.sniDiscoveryProbeTries, 1, 10) {
+                            bs = bs.copy(sniDiscoveryProbeTries = it); saved = false
+                        }
+                        BNumberRow("Probe Timeout (s)", bs.sniDiscoveryTimeout.toInt(), 1, 10) {
+                            bs = bs.copy(sniDiscoveryTimeout = it.toFloat()); saved = false
+                        }
+                        BSliderRow("Min Success Rate", (bs.sniDiscoveryMinSuccess * 100).toInt(), 0, 100, "{v}%") {
+                            bs = bs.copy(sniDiscoveryMinSuccess = it / 100f); saved = false
+                        }
+                        BSliderRow("Max Dynamic SNIs", bs.maxDynamicSnis, 10, 500, "{v} SNIs") {
+                            bs = bs.copy(maxDynamicSnis = it); saved = false
+                        }
                     }
                 }
                 Spacer(Modifier.height(8.dp))
@@ -663,6 +639,22 @@ fun BTextField(label: String, value: String, placeholder: String, keyboardType: 
             modifier      = Modifier.fillMaxWidth(),
             singleLine    = true,
             keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+            shape         = RoundedCornerShape(8.dp),
+        )
+    }
+}
+
+@Composable
+fun BMultiLineField(label: String, value: String, placeholder: String, onChange: (String) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        OutlinedTextField(
+            value         = value,
+            onValueChange = onChange,
+            placeholder   = { Text(placeholder, style = MaterialTheme.typography.bodySmall) },
+            modifier      = Modifier.fillMaxWidth().heightIn(min = 96.dp),
+            minLines      = 4,
+            textStyle     = MaterialTheme.typography.bodySmall,
             shape         = RoundedCornerShape(8.dp),
         )
     }
@@ -748,6 +740,17 @@ fun BDropdown(label: String, value: String, options: List<Pair<String, String>>,
 @Composable
 fun BListEditor(items: List<String>, placeholder: String, keyboardType: KeyboardType, onChange: (List<String>) -> Unit) {
     var newItem by remember { mutableStateOf("") }
+    var bulkText by remember { mutableStateOf("") }
+
+    val addMany: (String) -> Unit = { text ->
+        val parsed = text.split('\n', ',', ';')
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .filter { it !in items }
+        if (parsed.isNotEmpty()) onChange(items + parsed)
+        bulkText = ""
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // Existing items
@@ -768,7 +771,23 @@ fun BListEditor(items: List<String>, placeholder: String, keyboardType: Keyboard
             }
         }
 
-        // Add new item row
+        // Bulk add — paste many at once
+        OutlinedTextField(
+            value         = bulkText,
+            onValueChange = { bulkText = it },
+            placeholder   = { Text("Paste a list — one per line or comma-separated", style = MaterialTheme.typography.bodySmall) },
+            modifier      = Modifier.fillMaxWidth().heightIn(min = 72.dp),
+            minLines      = 2,
+            textStyle     = MaterialTheme.typography.bodySmall,
+            shape         = RoundedCornerShape(8.dp),
+        )
+        TextButton(
+            onClick     = { addMany(bulkText) },
+            enabled     = bulkText.isNotBlank(),
+            modifier    = Modifier.fillMaxWidth()
+        ) { Text("Add all pasted") }
+
+        // Add single item row
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -95,8 +95,8 @@ class PairStats:
     # moderate alpha keeps the score responsive.  Real-traffic packets can
     # arrive in bursts (many connections at once), so a smaller alpha keeps
     # one bad burst from dominating the score.
-    EMA_ALPHA_PROBE: float = 0.25
-    EMA_ALPHA_REAL: float = 0.15
+    EMA_ALPHA_PROBE: float = 0.01
+    EMA_ALPHA_REAL: float = 0.01
 
     def __init__(
         self,
@@ -335,12 +335,23 @@ class CombinationExplorer:
         probe_count: int,
         loss_threshold: float = 0.20,
         dead_threshold: float = 0.80,
+        client_sni_provider=None,
     ) -> None:
         self.port = port
         self.timeout = timeout
         self.probe_count = probe_count
         self.loss_threshold = loss_threshold
         self.dead_threshold = dead_threshold
+
+        # Optional callable returning the last observed *client* SNI.  In
+        # IP-only pools (direct/mitm) the decoy SNI is never sent upstream —
+        # the client's real SNI is — so probing with the decoy (often a
+        # non-Cloudflare name like apple.com) makes every probe fail and
+        # inflates the pool loss.  When a provider is set, probes use the
+        # client's SNI instead (falling back to a plain TCP connect before
+        # the first client has been seen).  When it's None (full IP×SNI
+        # grid), the pair's own SNI is probed as before.
+        self._client_sni_provider = client_sni_provider
 
         self.stats: Dict[Tuple[str, str], PairStats] = {
             (ip, sni): PairStats(ip, sni, ip_origin="static", sni_origin="static")
@@ -958,11 +969,31 @@ class CombinationExplorer:
         Uses the pair's own SNI so the test reflects exactly what the
         forwarder will send.  Certificate validation is disabled because we
         are testing reachability, not cert validity.
+
+        For IP-only pools (direct/mitm) the decoy SNI is never sent to the
+        server, so a ``client_sni_provider`` overrides the probe SNI with the
+        last observed client SNI; until one is seen the probe degrades to a
+        plain TCP connect so the fake SNI can't skew the loss signal.
         """
         import ssl
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
+
+        # Probe SNI selection:
+        #  - provider set + client SNI known  -> TLS with the client's SNI
+        #  - provider set + no client yet      -> plain TCP (routing is IP-only)
+        #  - no provider (full IP×SNI grid)    -> TLS with the pair's own SNI
+        probe_sni = None
+        if self._client_sni_provider is not None:
+            probe_sni = self._client_sni_provider()
+            if probe_sni is None:
+                use_tls = False
+            else:
+                use_tls = True
+        else:
+            probe_sni = ps.sni
+            use_tls = True
 
         count = max(2, self.probe_count + random.randint(-1, 1))
         for _ in range(count):
@@ -973,7 +1004,11 @@ class CombinationExplorer:
                 with socket.create_connection(
                     (ps.ip, self.port), timeout=self.timeout
                 ) as raw:
-                    with ctx.wrap_socket(raw, server_hostname=ps.sni):
+                    if use_tls:
+                        with ctx.wrap_socket(raw, server_hostname=probe_sni):
+                            latency_ms = (time.monotonic() - t0) * 1000
+                            success = True
+                    else:
                         latency_ms = (time.monotonic() - t0) * 1000
                         success = True
             except Exception:
@@ -1240,7 +1275,11 @@ class ActivePool:
 
             # ── 5. Periodic IP eviction ────────────────────────────────
             should_evict_ip = (self._refresh_count % self.evict_every == 0)
-            should_evict_sni = (self._refresh_count % self.sni_evict_every == 0)
+            # sni_evict_every == 0 (IP-only pools) disables SNI eviction.
+            should_evict_sni = (
+                self.sni_evict_every > 0
+                and (self._refresh_count % self.sni_evict_every == 0)
+            )
 
         # Eviction runs outside the lock (it takes its own lock internally).
         if should_evict_ip:
@@ -1460,8 +1499,15 @@ class ConnectionManager:
         sni_recycle_min_cooldown: float = 180.0,
         sni_recycle_max_quarantine: int = 100,
         sni_quarantine_scope: str = "both",
+        use_client_sni_probes: bool = False,
     ) -> None:
         self.interval = health_check_interval
+
+        # Last client SNI observed by the forwarder.  In IP-only pools
+        # (direct/mitm) this is the only SNI that actually gets sent
+        # upstream, so the health probe uses it instead of the decoy SNI.
+        self._client_sni: Optional[str] = None
+        self._client_sni_lock = threading.Lock()
 
         self.explorer = CombinationExplorer(
             combinations=combinations,
@@ -1470,6 +1516,9 @@ class ConnectionManager:
             probe_count=probe_count,
             loss_threshold=loss_threshold,
             dead_threshold=dead_threshold,
+            client_sni_provider=(
+                self._get_client_sni if use_client_sni_probes else None
+            ),
         )
         self.pool = ActivePool(
             explorer=self.explorer,
@@ -1533,16 +1582,44 @@ class ConnectionManager:
     def report_failure(self, ps: PairStats) -> None:
         self.pool.report_failure(ps)
 
+    # ------------------------------------------------------------------
+    # Client SNI feedback (IP-only pools)
+    # ------------------------------------------------------------------
+
+    def note_client_sni(self, sni: Optional[str]) -> None:
+        """Remember the latest real SNI observed from a client.
+
+        IP-only pools (direct/mitm) route on the client's SNI, so health
+        probes must test the IPs against it rather than against a decoy
+        SNI that may not even terminate TLS on those IPs.  The forwarder /
+        MITM handler calls this as soon as it parses each ClientHello.
+        """
+        if not sni or sni == "unknown":
+            return
+        with self._client_sni_lock:
+            self._client_sni = sni
+
+    def _get_client_sni(self) -> Optional[str]:
+        with self._client_sni_lock:
+            return self._client_sni
+
 
 # ---------------------------------------------------------------------------
 # Factory helper
 # ---------------------------------------------------------------------------
 
-def build_connection_manager(config: dict) -> Optional[ConnectionManager]:
+def build_connection_manager(config: dict, sni_axis: bool = True) -> Optional[ConnectionManager]:
     """Build a ConnectionManager from a config dict, or return None.
 
-    Returns None when only a single IP/SNI is configured so the caller
-    can fall back to the original direct-target code path.
+    Returns None when only a single IP is configured so the caller can fall
+    back to the original direct-target code path.
+
+    ``sni_axis``:
+      ``True``  — full pool, every IP × every SNI combination (the default).
+      ``False`` — IP-only pool.  In ``direct`` / ``mitm`` modes the upstream
+                  SNI is the client's real SNI, so the SNI axis is
+                  meaningless: all pairs share a single (first) SNI and SNI
+                  eviction/recycling are disabled.
 
     New config keys (all optional):
       DRAIN_TIMEOUT        float  Seconds before a draining pair is force-closed
@@ -1577,6 +1654,15 @@ def build_connection_manager(config: dict) -> Optional[ConnectionManager]:
     if not ips or not snis:
         logger.warning("No IPs or SNIs found in config — pool disabled.")
         return None
+
+    if not sni_axis:
+        # IP-only pool: every pair shares the first SNI; SNI eviction and
+        # recycling are pointless when the SNI never affects routing.
+        snis = [snis[0]]
+        config = dict(config)
+        config["SNI_EVICT_EVERY"] = 0
+        config["SNI_EVICT_COUNT"] = 0
+        config["SNI_RECYCLE_ENABLED"] = False
 
     if len(ips) == 1 and len(snis) == 1:
         logger.info("Single IP+SNI detected — pool disabled (using direct mode).")
@@ -1632,4 +1718,5 @@ def build_connection_manager(config: dict) -> Optional[ConnectionManager]:
         sni_recycle_min_cooldown=config.get("SNI_RECYCLE_MIN_COOLDOWN", 180.0),
         sni_recycle_max_quarantine=config.get("SNI_RECYCLE_MAX_QUARANTINE", 100),
         sni_quarantine_scope=sni_quarantine_scope,
+        use_client_sni_probes=not sni_axis,
     )

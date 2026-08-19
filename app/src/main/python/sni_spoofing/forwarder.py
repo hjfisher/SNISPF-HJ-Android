@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover -- Windows
     resource = None  # type: ignore
 
 from .bypass.base import BypassStrategy
-from .shaping import DISABLED_SHAPER, TrafficShaper
+from .finalmask import FinalMasker
 from .tls import ClientHelloBuilder
 
 if TYPE_CHECKING:
@@ -129,7 +129,8 @@ async def handle_connection(
     interface_ip: Optional[str] = None,
     raw_injector=None,
     conn_manager: "Optional[ConnectionManager]" = None,
-    shaper: Optional[TrafficShaper] = None,
+    masker: Optional[FinalMasker] = None,
+    cipher_suites: Optional[list] = None,
 ):
     """Handle a single incoming connection.
 
@@ -151,7 +152,6 @@ async def handle_connection(
     loop = asyncio.get_running_loop()
     outgoing_sock = None
     local_port = None
-    active_shaper = shaper if shaper is not None else DISABLED_SHAPER
 
     # ── Pool integration: pick the best (IP, SNI) pair ────────────────
     # If a ConnectionManager is available, override the static config values
@@ -194,6 +194,10 @@ async def handle_connection(
         # Parse to see if it's a TLS ClientHello
         parsed = ClientHelloBuilder.parse_client_hello(first_data)
         client_sni = parsed.get("sni", "unknown")
+        # Feed the client's real SNI back to the pool so IP-only pools
+        # (direct/mitm) can probe the IPs against it instead of a decoy SNI.
+        if conn_manager is not None:
+            conn_manager.note_client_sni(client_sni)
         logger.info(
             f"[{incoming_addr[0]}:{incoming_addr[1]}] -> "
             f"{active_ip}:{connect_port} | SNI: {client_sni} | "
@@ -225,7 +229,9 @@ async def handle_connection(
             if not interface_ip:
                 outgoing_sock.bind(("", 0))
             local_port = outgoing_sock.getsockname()[1]
-            fake_hello = ClientHelloBuilder.build_client_hello(sni=active_sni)
+            fake_hello = ClientHelloBuilder.build_client_hello(
+                sni=active_sni, cipher_suites=cipher_suites
+            )
             raw_injector.register_port(local_port, fake_hello)
 
         # Connect to target server (triggers SYN -> SYN+ACK -> ACK)
@@ -247,26 +253,36 @@ async def handle_connection(
         if local_port is None and raw_injector is not None:
             local_port = outgoing_sock.getsockname()[1]
 
-        # Apply DPI bypass strategy
-        # The strategy handles:
-        # - Waiting for raw injection confirmation (if available)
-        # - Sending the real ClientHello (fragmented or not)
-        success = await bypass_strategy.apply(
-            client_sock=incoming_sock,
-            server_sock=outgoing_sock,
-            fake_sni=active_sni,
-            first_data=first_data,
-            loop=loop,
-        )
+        # Apply DPI bypass strategy OR finalmask
+        # - finalmask: the initial ClientHello goes through the TCP mask
+        #   layers (xray's ``finalmask`` behaviour).  The fragment-based
+        #   bypass strategies are redundant in that case.
+        # - otherwise the bypass strategy sends the (fragmented) hello and
+        #   handles raw-injection confirmation.
+        masker_instance = masker.clone() if masker is not None else None
 
-        if not success:
-            logger.warning(
-                f"[{incoming_addr[0]}:{incoming_addr[1]}] "
-                f"Bypass strategy '{bypass_strategy.name}' failed, "
-                f"falling back to direct relay"
+        async def _mask_sink(chunk):
+            await loop.sock_sendall(outgoing_sock, chunk)
+
+        if masker_instance is not None:
+            await masker_instance.send(_mask_sink, first_data)
+        else:
+            success = await bypass_strategy.apply(
+                client_sock=incoming_sock,
+                server_sock=outgoing_sock,
+                fake_sni=active_sni,
+                first_data=first_data,
+                loop=loop,
             )
-            # Fallback: just send the data directly
-            await loop.sock_sendall(outgoing_sock, first_data)
+
+            if not success:
+                logger.warning(
+                    f"[{incoming_addr[0]}:{incoming_addr[1]}] "
+                    f"Bypass strategy '{bypass_strategy.name}' failed, "
+                    f"falling back to direct relay"
+                )
+                # Fallback: just send the data directly
+                await loop.sock_sendall(outgoing_sock, first_data)
 
         # NOTE: Do NOT mark success yet.  We need to verify the server
         # actually responds with valid data (not a block page or RST).
@@ -284,7 +300,10 @@ async def handle_connection(
                     data = await loop.sock_recv(s_in, BUFFER_SIZE)
                     if not data:
                         break
-                    await active_shaper.send(loop, s_out, data, label)
+                    if label == "C->S" and masker_instance is not None:
+                        await masker_instance.send(_mask_sink, data)
+                    else:
+                        await loop.sock_sendall(s_out, data)
                     # Record success only when we get the first
                     # response from the server (S->C direction).
                     if label == "S->C" and not server_responded:
@@ -377,7 +396,8 @@ async def start_server(
     interface_ip: Optional[str] = None,
     raw_injector=None,
     conn_manager: "Optional[ConnectionManager]" = None,
-    shaper: Optional[TrafficShaper] = None,
+    masker: Optional[FinalMasker] = None,
+    cipher_suites: Optional[list] = None,
 ):
     """Start the TCP forwarding server.
 
@@ -425,14 +445,12 @@ async def start_server(
         logger.info(f"Forwarding to {connect_ip}:{connect_port}")
         logger.info(f"Fake SNI: {fake_sni}")
     logger.info(f"Bypass strategy: {bypass_strategy.name}")
-    if shaper is not None and shaper.enabled:
+    if masker is not None:
         logger.info(
-            f"Traffic shaping: ENABLED (direction={shaper.direction}, "
-            f"chunk={shaper.min_chunk}-{shaper.max_chunk}B, "
-            f"delay={shaper.min_delay_ms}-{shaper.max_delay_ms}ms)"
+            f"FinalMask TCP: ENABLED ({len(masker.layers)} layer(s))"
         )
-    else:
-        logger.info("Traffic shaping: disabled")
+    if cipher_suites is not None:
+        logger.info(f"Custom cipherSuites: ENABLED ({len(cipher_suites)} suite(s))")
     if raw_injector is not None:
         logger.info("Raw packet injection: ACTIVE (seq_id trick enabled)")
     else:
@@ -456,7 +474,8 @@ async def start_server(
                 interface_ip=interface_ip,
                 raw_injector=raw_injector,
                 conn_manager=conn_manager,
-                shaper=shaper,
+                masker=masker,
+                cipher_suites=cipher_suites,
             )
 
     try:

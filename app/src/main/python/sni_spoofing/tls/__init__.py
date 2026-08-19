@@ -8,6 +8,8 @@ import struct
 import os
 from typing import Optional
 
+from .ciphers import build_cipher_suites_field, parse_cipher_suite_ids
+
 
 class ClientHelloBuilder:
     """Builds TLS ClientHello packets with spoofed SNI.
@@ -185,6 +187,7 @@ class ClientHelloBuilder:
         random_bytes: Optional[bytes] = None,
         key_share: Optional[bytes] = None,
         target_size: int = 517,
+        cipher_suites: Optional[list] = None,
     ) -> bytes:
         """Build a complete TLS ClientHello record.
 
@@ -194,6 +197,11 @@ class ClientHelloBuilder:
             random_bytes: 32-byte client random (random if None)
             key_share: 32-byte x25519 public key (random if None)
             target_size: Target total size for the TLS record (default 517)
+            cipher_suites: Optional list of cipher suite *names* (or 4-hex
+                digit IDs) to override the built-in default list — the
+                ``cipherSuites`` idea from @patterniha's xray config.  Each
+                item may also be a raw 2-byte ``bytes`` blob, which is used
+                verbatim.
 
         Returns:
             Complete TLS record bytes ready to send
@@ -202,6 +210,15 @@ class ClientHelloBuilder:
             session_id = os.urandom(32)
         if random_bytes is None:
             random_bytes = os.urandom(32)
+
+        if cipher_suites is not None:
+            if isinstance(cipher_suites, bytes):
+                cs_field = cipher_suites
+            else:
+                ids = parse_cipher_suite_ids(cipher_suites)
+                cs_field = build_cipher_suites_field(ids) if ids else cls.CIPHER_SUITES
+        else:
+            cs_field = cls.CIPHER_SUITES
 
         # Client version: TLS 1.2 (0x0303) - real version in extensions
         client_version = b"\x03\x03"
@@ -237,7 +254,7 @@ class ClientHelloBuilder:
             client_version
             + random_bytes
             + session_id_field
-            + cls.CIPHER_SUITES
+            + cs_field
             + compression
         )
         extensions_len_so_far = len(extensions)

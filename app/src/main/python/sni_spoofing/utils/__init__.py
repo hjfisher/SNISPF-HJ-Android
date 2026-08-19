@@ -64,7 +64,6 @@ def check_platform_capabilities() -> dict:
         "fake_sni": True,          # Always available (application layer)
         "tcp_nodelay": True,       # Always available
         "raw_socket": False,       # Platform-dependent
-        "ip_ttl_trick": False,     # Platform-dependent
     }
 
     # Check raw socket support (needed for advanced tricks)
@@ -73,7 +72,6 @@ def check_platform_capabilities() -> dict:
             s = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
             s.close()
             caps["raw_socket"] = True
-            caps["ip_ttl_trick"] = True
         else:
             # Windows raw sockets are limited
             caps["raw_socket"] = False

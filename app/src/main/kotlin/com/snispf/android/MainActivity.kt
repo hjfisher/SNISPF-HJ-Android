@@ -29,6 +29,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -249,6 +251,46 @@ fun StatsTab(state: UiState) {
             StatRow("Uptime",  formatUptime(p.uptimeSeconds))
         }
 
+        SectionTitle("MITM Relay")
+        StatsCard {
+            val clipboard = LocalClipboardManager.current
+            var copied by remember { mutableStateOf(false) }
+            if (p.mitmFingerprint.isBlank()) {
+                StatRow("Status", "Not active", Color(0xFF757575))
+                Text(
+                    "Run in MITM mode to generate the self-signed cert. Pin its SHA-256 in your client.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 16.sp,
+                )
+            } else {
+                StatRow("Status", "Active", Color(0xFF4CAF50))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Certificate SHA-256", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            p.mitmFingerprint,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                        )
+                    }
+                    IconButton(onClick = { clipboard.setText(AnnotatedString(p.mitmFingerprint)); copied = true }) {
+                        Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(18.dp))
+                    }
+                }
+                if (copied) {
+                    Text("✓ Copied to clipboard", color = Color(0xFF4CAF50), style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+
         SectionTitle("Active Pool  (${p.activeSlots} active slots)")
         StatsCard {
             StatRow("Stable pairs",   "${p.probedStable}", Color(0xFF4CAF50))
@@ -457,7 +499,21 @@ fun LogTab(state: UiState, vm: SnispfViewModel) {
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("Log  (${state.logs.size} lines)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            IconButton(onClick = { vm.clearLogs() }) { Icon(Icons.Default.Delete, null) }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                val clipboard = LocalClipboardManager.current
+                var copied by remember { mutableStateOf(false) }
+                IconButton(
+                    onClick = {
+                        if (state.logs.isNotEmpty()) {
+                            clipboard.setText(AnnotatedString(state.logs.joinToString("\n")))
+                            copied = true
+                        }
+                    },
+                    enabled = state.logs.isNotEmpty(),
+                ) { Icon(Icons.Default.ContentCopy, null) }
+                if (copied) Text("✓", color = Color(0xFF4CAF50), style = MaterialTheme.typography.bodySmall)
+                IconButton(onClick = { vm.clearLogs() }) { Icon(Icons.Default.Delete, null) }
+            }
         }
 
         Card(

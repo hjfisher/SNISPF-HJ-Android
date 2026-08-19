@@ -19,6 +19,7 @@ import platform
 import signal
 import sys
 from pathlib import Path
+from typing import Optional
 
 # Add parent to path for direct script execution
 if __name__ == "__main__":
@@ -34,8 +35,10 @@ from sni_spoofing.bypass import (
     RawInjector,
     is_raw_available,
 )
+from sni_spoofing.certs import load_or_create
+from sni_spoofing.finalmask import FinalMasker
 from sni_spoofing.forwarder import start_server
-from sni_spoofing.shaping import TrafficShaper
+from sni_spoofing.mitm import start_mitm_server
 from sni_spoofing.pool import build_connection_manager
 from sni_spoofing.ip_discovery import build_ip_discovery
 from sni_spoofing.sni_discovery import build_sni_discovery
@@ -116,9 +119,79 @@ DEFAULT_CONFIG = {
     "BYPASS_METHOD": "fragment",
     "FRAGMENT_STRATEGY": "sni_split",
     "FRAGMENT_DELAY": 0.1,
-    "USE_TTL_TRICK": False,
     "FAKE_SNI_METHOD": "prefix_fake",
+    "CIPHER_SUITES": None,
+    "FINALMASK_TCP": None,
+    "MITM_CERT_FILE": None,
+    "MITM_KEY_FILE": None,
+    "MITM_CERT_CN": "SNISPF-HJ",
+    "MITM_ALPN": ["h2", "http/1.1"],
+    "MITM_USE_CLIENT_SNI": False,
 }
+
+
+def _load_finalmask_rules(value):
+    """Normalize the ``FINALMASK_TCP`` config value into a rules list.
+
+    Accepts (matching the xray config formats):
+    * ``null`` → disabled
+    * a JSON array of rule dicts
+    * xray's ``{"tcp": [...]}`` wrapper
+    * a path to a JSON file containing either of the above
+    * an inline JSON string containing either of the above
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return value
+    if isinstance(value, dict):
+        # xray-style wrapper: {"tcp": [ ... ]}
+        tcp = value.get("tcp")
+        if isinstance(tcp, (list, tuple)):
+            return tcp
+        # A bare rule object {"type": "fragment", "settings": {...}} — the
+        # form used in the shipped config.json and the Android config
+        # builder — is a single-rule finalmask.  Wrap it so it activates.
+        if "type" in value or "settings" in value:
+            return [value]
+        return None
+    if isinstance(value, str):
+        path = value.strip()
+        if not path:
+            return None
+        if os.path.isfile(path):
+            try:
+                with open(path, "r") as f:
+                    return _load_finalmask_rules(json.load(f))
+            except (OSError, json.JSONDecodeError) as exc:
+                logger = logging.getLogger("snispf")
+                logger.warning(
+                    "FINALMASK_TCP: cannot read %r (%s) — ignored",
+                    value, exc,
+                )
+                return None
+        # Not a path: try to parse it as an inline JSON value.
+        try:
+            return _load_finalmask_rules(json.loads(path))
+        except json.JSONDecodeError:
+            logger = logging.getLogger("snispf")
+            logger.warning(
+                "FINALMASK_TCP: %r is neither a file nor valid JSON — ignored",
+                value,
+            )
+            return None
+    return None
+
+
+def _cipher_suites_to_openssl(value) -> Optional[str]:
+    """Turn a ``CIPHER_SUITES`` config value into an OpenSSL cipher-list string."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        parts = [str(x).strip() for x in value if str(x).strip()]
+        return ":".join(parts) if parts else None
+    text = str(value).strip()
+    return text or None
 
 
 def load_config(config_path: str) -> dict:
@@ -150,8 +223,17 @@ def generate_config(output_path: str):
         "BYPASS_METHOD": "fragment",
         "FRAGMENT_STRATEGY": "sni_split",
         "FRAGMENT_DELAY": 0.1,
-        "USE_TTL_TRICK": False,
         "FAKE_SNI_METHOD": "prefix_fake",
+        "_comment_method": "Bypass mode: 'direct' (no spoofing), 'fragment' (ClientHello fragmentation), 'fake_sni' (decoy SNI), 'combined' (fragment + fake SNI), or 'mitm' (TLS-terminating relay — the tool builds its own SSL and re-encrypts to the real upstream with a fresh ClientHello).",
+        "CIPHER_SUITES": None,
+        "_comment_cipher_suites": "Custom TLS cipher suites for the upstream ClientHello (colon-separated names like xray's cipherSuites), e.g. 'TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256'. Also used for the raw-injector fake hello in standard mode.",
+        "FINALMASK_TCP": None,
+        "_comment_finalmask": "finalmask TCP fragmentation (ported from xray). A JSON array of fragment rules, or a path to a JSON file with such an array. See README.",
+        "MITM_CERT_FILE": None,
+        "MITM_KEY_FILE": None,
+        "MITM_CERT_CN": "SNISPF-HJ",
+        "MITM_ALPN": ["h2", "http/1.1"],
+        "MITM_USE_CLIENT_SNI": False,
     }
 
     with open(output_path, "w") as f:
@@ -189,7 +271,6 @@ def build_strategy(config: dict, raw_injector=None) -> BypassStrategy:
         return FakeSNIBypass(
             method=config.get("FAKE_SNI_METHOD", "prefix_fake"),
             raw_injector=raw_injector,
-            use_ttl_trick=config.get("USE_TTL_TRICK", False),
             # When a raw injector is active, also fragment the real
             # ClientHello at the SNI boundary so that DPI which
             # reassembles the TCP stream cannot match the SNI on the
@@ -201,7 +282,6 @@ def build_strategy(config: dict, raw_injector=None) -> BypassStrategy:
     elif method == "combined":
         return CombinedBypass(
             fragment_strategy=config.get("FRAGMENT_STRATEGY", "sni_split"),
-            use_ttl_trick=config.get("USE_TTL_TRICK", False),
             fragment_delay=config.get("FRAGMENT_DELAY", 0.1),
             raw_injector=raw_injector,
         )
@@ -212,7 +292,7 @@ def build_strategy(config: dict, raw_injector=None) -> BypassStrategy:
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
-def parse_args():
+def parse_args(argv=None):
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         prog="snispf",
@@ -236,6 +316,11 @@ def parse_args():
             "  fragment   - Fragment TLS ClientHello at SNI boundary (default)\n"
             "  fake_sni   - Inject fake ClientHello (needs root for seq_id trick)\n"
             "  combined   - Both fragmentation and fake SNI (most effective)\n"
+            "  mitm       - TLS-terminating relay (tls-decrypt/tls-repack):\n"
+            "               the tool builds its own self-signed SSL, decrypts\n"
+            "               the client's session, then re-encrypts to the real\n"
+            "               upstream with a fresh ClientHello (cipherSuites /\n"
+            "               ALPN / finalmask). SHA-256 printed for pinning\n"
             "\nDomain Checker:\n"
             "  %(prog)s --check-domains domains.txt\n"
             "  %(prog)s --check-domains domains.txt --output verified.txt\n"
@@ -275,8 +360,22 @@ def parse_args():
     # Bypass settings
     parser.add_argument(
         "--method", "-m",
-        choices=["direct", "fragment", "fake_sni", "combined"],
-        help="Bypass method (default: fragment)",
+        choices=["direct", "fragment", "fake_sni", "combined", "mitm"],
+        help="Bypass mode (default: fragment). 'mitm' = TLS-terminating "
+             "relay that builds its own SSL and re-encrypts to the real "
+             "upstream (tls-decrypt / tls-repack).",
+    )
+    parser.add_argument(
+        "--cipher-suites",
+        metavar="LIST",
+        help="Custom upstream TLS cipher suites, colon-separated names "
+             "(xray cipherSuites format), e.g. "
+             "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256",
+    )
+    parser.add_argument(
+        "--finalmask",
+        metavar="FILE",
+        help="Path to a JSON file with a finalmask TCP fragment-rules array",
     )
     parser.add_argument(
         "--fragment-strategy",
@@ -288,11 +387,6 @@ def parse_args():
         type=float,
         metavar="SECONDS",
         help="Delay between fragments in seconds (default: 0.1)",
-    )
-    parser.add_argument(
-        "--ttl-trick",
-        action="store_true",
-        help="Use IP TTL trick for fake packets (may need privileges)",
     )
     parser.add_argument(
         "--no-raw",
@@ -354,7 +448,7 @@ def parse_args():
         help="Show platform capabilities and exit",
     )
 
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def parse_host_port(addr: str, default_host: str = "0.0.0.0", default_port: int = 443) -> tuple:
@@ -404,15 +498,14 @@ def show_platform_info():
         print("  ★ Also good:   fake_sni (uses seq_id trick)")
     elif caps["raw_socket"]:
         print("  ✓ All methods available (running with sufficient privileges)")
-        print("  ★ Recommended: combined --ttl-trick")
+        print("  ★ Recommended: combined (uses seq_id trick + fragmentation)")
     else:
         print("  ✓ fragment    - TLS ClientHello fragmentation")
-        print("  ✓ fake_sni    - TTL trick + fragmentation (auto-enabled)")
-        print("  ✓ combined    - TTL trick + fragmentation (recommended)")
-        print("  ★ Recommended: combined (auto-uses TTL trick)")
+        print("  ✓ fake_sni    - fragmentation of the real ClientHello (no fake)")
+        print("  ✓ combined    - fragmentation (recommended without raw sockets)")
+        print("  ★ Recommended: combined")
         if platform.system() != "Windows":
             print("  ℹ  Run with sudo/root for raw injection (seq_id trick)")
-        print("  ℹ  TTL trick is auto-enabled when raw sockets are unavailable")
 
     print("\nDomain Checker:")
     print("  ✓ Bulk Cloudflare-backed domain verifier (no privileges needed)")
@@ -485,6 +578,108 @@ def run_domain_check(args, logger):
     print()
 
 
+def is_mitm_method(config: dict) -> bool:
+    """True when the configured bypass mode is the MITM relay.
+
+    ``mitm`` is a bypass method like ``direct`` / ``combined``.  The legacy
+    ``MODE: "mitm"`` key is still honoured for configs written before the
+    merge, so ``{"BYPASS_METHOD": "mitm"}`` and ``{"MODE": "mitm"}`` both
+    select the relay.
+    """
+    method = str(config.get("BYPASS_METHOD", "fragment")).lower()
+    if method == "mitm":
+        return True
+    return str(config.get("MODE", "standard")).lower() == "mitm"
+
+
+# ─── MITM Mode ──────────────────────────────────────────────────────────────
+
+def run_mitm(config: dict, logger):
+    """Run the TLS-terminating MITM relay (tls-decrypt / tls-repack).
+
+    The tool presents an automatically generated self-signed certificate
+    (SHA-256 printed for pinning), terminates the client's TLS session,
+    and re-encrypts to the real upstream with a fresh ClientHello carrying
+    the configured cipherSuites / ALPN / finalmask.
+    """
+    masker_rules = _load_finalmask_rules(config.get("FINALMASK_TCP"))
+    cipher_suites = _cipher_suites_to_openssl(config.get("CIPHER_SUITES"))
+
+    alpn = config.get("MITM_ALPN") or []
+    if isinstance(alpn, str):
+        alpn = [x.strip() for x in alpn.split(",") if x.strip()]
+    alpn = [str(x) for x in alpn]
+
+    cert_path, key_path, fingerprint = load_or_create(
+        cert_file=config.get("MITM_CERT_FILE"),
+        key_file=config.get("MITM_KEY_FILE"),
+        cn=str(config.get("MITM_CERT_CN", "SNISPF-HJ")),
+    )
+    logger.info("MITM TLS certificate: %s", cert_path)
+    logger.info("MITM cert SHA-256 (pin this): %s", fingerprint)
+
+    print("\n  MITM mode — pin this SHA-256 certificate in your app:")
+    print(f"  {fingerprint}\n")
+    try:
+        fp_file = os.path.join(os.path.expanduser("~"), ".snispf", "fingerprint.txt")
+        with open(fp_file, "w") as f:
+            f.write(fingerprint + "\n")
+        logger.info("Fingerprint saved to %s", fp_file)
+    except OSError:
+        pass
+
+    # ── Connection pool (multi-IP) + dynamic discovery ─────────────────
+    # Same machinery as the standard forward mode, but restricted to the
+    # IP axis: the upstream SNI is the client's real SNI
+    # (MITM_USE_CLIENT_SNI), so the SNI pool axis is meaningless.  Each
+    # client connection picks its upstream IP from the pool, real-traffic
+    # loss is reported back for failover, and IP discovery feeds fresh IPs.
+    conn_manager = build_connection_manager(config, sni_axis=False)
+    if conn_manager is not None:
+        conn_manager.start_health_loop()
+        logger.info(
+            "Connection pool active (IP-only) — %d IP(s), %d active slot(s)",
+            len({ip for ip, _ in conn_manager.explorer.stats}),
+            conn_manager.pool.slots,
+        )
+
+        discovery = build_ip_discovery(conn_manager, config)
+        if discovery is not None:
+            discovery.start()
+            logger.info(
+                "Dynamic IP discovery active — batch=%d  interval=%ds",
+                discovery.scan_batch, int(discovery.scan_interval),
+            )
+        else:
+            logger.info(
+                "Dynamic IP discovery: disabled "
+                "(set DYNAMIC_IP_DISCOVERY=true in config to enable)"
+            )
+
+        # SNI discovery is intentionally skipped: an IP-only pool has a
+        # single (unused) SNI, and the upstream SNI is the client's own.
+        logger.info(
+            "Dynamic SNI discovery: skipped (IP-only pool in MITM mode)"
+        )
+
+    asyncio.run(
+        start_mitm_server(
+            listen_host=config["LISTEN_HOST"],
+            listen_port=config["LISTEN_PORT"],
+            connect_ip=config["CONNECT_IP"],
+            connect_port=config["CONNECT_PORT"],
+            fake_sni=config["FAKE_SNI"],
+            cipher_suites=cipher_suites,
+            alpn=alpn,
+            masker_rules=masker_rules,
+            cert_file=cert_path,
+            key_file=key_path,
+            use_client_sni=bool(config.get("MITM_USE_CLIENT_SNI", False)),
+            conn_manager=conn_manager,
+        )
+    )
+
+
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -536,8 +731,11 @@ def main():
     if args.fragment_delay is not None:
         config["FRAGMENT_DELAY"] = args.fragment_delay
 
-    if args.ttl_trick:
-        config["USE_TTL_TRICK"] = True
+    if args.cipher_suites:
+        config["CIPHER_SUITES"] = args.cipher_suites
+
+    if args.finalmask:
+        config["FINALMASK_TCP"] = args.finalmask
 
     # ── Domain checker mode ───────────────────────────────────────────
     if args.check_domains:
@@ -565,8 +763,10 @@ def main():
                     cli_overridden.add("FRAGMENT_STRATEGY")
                 if args.fragment_delay is not None:
                     cli_overridden.add("FRAGMENT_DELAY")
-                if args.ttl_trick:
-                    cli_overridden.add("USE_TTL_TRICK")
+                if args.cipher_suites:
+                    cli_overridden.add("CIPHER_SUITES")
+                if args.finalmask:
+                    cli_overridden.add("FINALMASK_TCP")
 
                 for key, val in user_config.items():
                     if key not in cli_overridden:
@@ -585,14 +785,27 @@ def main():
     # Resolve target host if needed
     config["CONNECT_IP"] = resolve_host(config["CONNECT_IP"])
 
-    # ── Build connection pool (multi-IP / multi-SNI) ──────────────────
-    # build_connection_manager returns None when only a single IP+SNI is
+    # ── MITM relay mode ─────────────────────────────────────────────────
+    # "mitm" is a bypass method like direct / combined / fragment — it runs
+    # a TLS-terminating relay instead of the plain-TCP forward server, so it
+    # bypasses the pool / raw-injector machinery below.
+    if is_mitm_method(config):
+        run_mitm(config, logger)
+        return
+
+    # ── Build connection pool ──────────────────────────────────────────
+    # For "direct" and "mitm" the upstream SNI is the client's real SNI,
+    # so the pool is restricted to the IP axis (single SNI × many IPs).
+    # All other methods keep the full IP × SNI grid.
+    method = config.get("BYPASS_METHOD", "fragment").lower()
+    sni_axis = method not in ("direct", "mitm")
+    # build_connection_manager returns None when only a single IP is
     # configured, in which case the server falls back to the original
     # single-target code path.  When a pool IS available, the "primary"
     # CONNECT_IP and FAKE_SNI values are set to the first list entries so
     # that the raw injector (which still needs a single remote IP) still
     # works for the most common upstream.
-    conn_manager = build_connection_manager(config)
+    conn_manager = build_connection_manager(config, sni_axis=sni_axis)
     if conn_manager is not None:
         # Derive a representative IP for interface detection and raw injector.
         first_ip = list(conn_manager.explorer.stats.keys())[0][0]
@@ -606,7 +819,6 @@ def main():
     # ── Raw injector setup ────────────────────────────────────────────
     raw_injector = None
     use_raw = not getattr(args, 'no_raw', False)
-    method = config.get("BYPASS_METHOD", "fragment").lower()
 
     if use_raw and method in ("fake_sni", "combined") and interface_ip:
         if is_raw_available():
@@ -618,28 +830,21 @@ def main():
                 fake_sni_builder=None,
             )
             if not raw_injector.start():
-                logger.warning(
-                    "Raw injector failed to start. "
-                    "Enabling TTL trick as fallback."
-                )
+                logger.warning("Raw injector failed to start.")
                 raw_injector = None
-                config["USE_TTL_TRICK"] = True
         else:
-            # No raw sockets (macOS, Android/Termux, unprivileged Linux).
-            # Auto-enable the TTL trick: sends a fake ClientHello with a
-            # low IP TTL that reaches the nearby DPI middlebox but expires
-            # before the real server.  Works on any platform that supports
-            # setsockopt(IP_TTL).
-            config["USE_TTL_TRICK"] = True
+            # No raw sockets (macOS, Android/Termux, unprivileged Linux):
+            # the strategies fall back to fragmentation of the real
+            # ClientHello, which needs no special privileges.
             if method == "fake_sni":
                 logger.info(
                     "Raw sockets not available (need root/CAP_NET_RAW). "
-                    "fake_sni will use TTL trick + fragmentation."
+                    "fake_sni will fragment the real ClientHello."
                 )
             elif method == "combined":
                 logger.info(
                     "Raw sockets not available. "
-                    "Using TTL trick + fragmentation bypass."
+                    "Using fragmentation bypass."
                 )
 
     # Build bypass strategy
@@ -673,19 +878,28 @@ def main():
             )
 
         # ── Start dynamic SNI discovery (optional) ─────────────────────
-        sni_discovery = build_sni_discovery(conn_manager, config)
-        if sni_discovery is not None:
-            sni_discovery.start()
-            logger.info(
-                "Dynamic SNI discovery active — batch=%d  interval=%ds  "
-                "source_refresh=%ds",
-                sni_discovery.scan_batch, int(sni_discovery.scan_interval),
-                int(sni_discovery.source_refresh_interval),
-            )
+        # Skipped when the pool is restricted to the IP axis (direct/mitm):
+        # the upstream SNI is the client's real SNI, so new SNIs have no
+        # effect on routing.
+        if sni_axis:
+            sni_discovery = build_sni_discovery(conn_manager, config)
+            if sni_discovery is not None:
+                sni_discovery.start()
+                logger.info(
+                    "Dynamic SNI discovery active — batch=%d  interval=%ds  "
+                    "source_refresh=%ds",
+                    sni_discovery.scan_batch, int(sni_discovery.scan_interval),
+                    int(sni_discovery.source_refresh_interval),
+                )
+            else:
+                logger.info(
+                    "Dynamic SNI discovery: disabled "
+                    "(set DYNAMIC_SNI_DISCOVERY=true in config to enable)"
+                )
         else:
             logger.info(
-                "Dynamic SNI discovery: disabled "
-                "(set DYNAMIC_SNI_DISCOVERY=true in config to enable)"
+                "Dynamic SNI discovery: skipped (IP-only pool for %s)",
+                method,
             )
 
     # Setup signal handlers for graceful shutdown
@@ -700,7 +914,19 @@ def main():
         signal.signal(signal.SIGTERM, signal_handler)
 
     # Run the server
-    shaper = TrafficShaper.from_config(config)
+    masker_rules = _load_finalmask_rules(config.get("FINALMASK_TCP"))
+    masker = FinalMasker.from_rules(masker_rules)
+    if masker is not None:
+        logger.info(
+            "FinalMask TCP active — initial ClientHello and C->S traffic "
+            "go through %d fragment layer(s); fragment bypass is superseded",
+            len(masker.layers),
+        )
+
+    cipher_suites = config.get("CIPHER_SUITES")
+    if not isinstance(cipher_suites, (str, list, tuple, bytes)):
+        cipher_suites = None
+
     try:
         asyncio.run(
             start_server(
@@ -713,7 +939,8 @@ def main():
                 interface_ip=interface_ip,
                 raw_injector=raw_injector,
                 conn_manager=conn_manager,
-                shaper=shaper,
+                masker=masker,
+                cipher_suites=cipher_suites,
             )
         )
     except KeyboardInterrupt:

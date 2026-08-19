@@ -42,6 +42,7 @@ _stats = {
     "quarantine_size":      0,
     "sni_quarantine_size":  0,
     "uptime_seconds":       0,
+    "mitm_fingerprint":     "",
 }
 _stats_lock = threading.Lock()
 _start_time = None
@@ -151,7 +152,7 @@ def _snapshot():
 
 # ── Proxy thread ──────────────────────────────────────────────────────────────
 def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, unused
-    global _status, _loop, _start_time, _conn_manager, _ip_discovery
+    global _status, _loop, _start_time, _conn_manager, _ip_discovery, _sni_discovery
 
     use_root    = (use_root_int == 1)
     old_out     = sys.stdout
@@ -166,12 +167,15 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
 
         config = json.loads(config_json)
 
-        from sni_spoofing.cli           import build_strategy
+        from sni_spoofing.cli           import build_strategy, is_mitm_method
+        from sni_spoofing.cli           import _load_finalmask_rules, _cipher_suites_to_openssl
+        from sni_spoofing.certs         import load_or_create
+        from sni_spoofing.finalmask     import FinalMasker
+        from sni_spoofing.mitm          import start_mitm_server
         from sni_spoofing.forwarder     import start_server
         from sni_spoofing.pool          import build_connection_manager
         from sni_spoofing.ip_discovery  import build_ip_discovery
         from sni_spoofing.sni_discovery import build_sni_discovery
-        from sni_spoofing.shaping       import TrafficShaper
         from sni_spoofing.utils         import get_default_interface_ipv4, resolve_host
         _log("Imports OK")
 
@@ -181,13 +185,29 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
         config.setdefault("CONNECT_IP", resolve_host(ips[0] if ips else "104.18.38.202"))
         config.setdefault("FAKE_SNI",   snis[0] if snis else "cdnjs.cloudflare.com")
 
+        method = config.get("BYPASS_METHOD", "combined").lower()
+        # The pool is restricted to the IP axis (single SNI × many IPs) for
+        # "direct", "fragment" and "mitm":
+        #  - direct  : the client's real ClientHello is relayed untouched
+        #  - fragment: the real ClientHello is fragmented, keeping the client's
+        #              own SNI; the pool SNI is only used for the raw-injector
+        #              fake hello, which Android cannot build (no CAP_NET_RAW)
+        #  - mitm    : the upstream SNI is the client's real SNI
+        # All other methods (fake_sni / combined) keep the full IP × SNI grid.
+        sni_axis = method not in ("direct", "fragment", "mitm")
+
+        if is_mitm_method(config):
+            _run_mitm(config, use_root_int, ips, snis)
+            return
+
         # Build pool
-        _conn_manager = build_connection_manager(config)
+        _conn_manager = build_connection_manager(config, sni_axis=sni_axis)
         if _conn_manager is not None:
             total  = len(_conn_manager.explorer.stats)
             n_ips  = len(ips)
-            n_snis = len(snis)
-            _log(f"Pool built: {n_ips} IPs × {n_snis} SNIs = {total} pairs")
+            eff_snis = 1 if not sni_axis else len(snis)
+            _log(f"Pool built: {n_ips} IPs × {eff_snis} SNI = {total} pairs"
+                 + (" (IP-only)" if not sni_axis else ""))
             with _stats_lock:
                 _stats["pairs_total"]    = total
                 _stats["pairs_unprobed"] = total
@@ -204,14 +224,17 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
                 _log("Dynamic IP discovery disabled (set DYNAMIC_IP_DISCOVERY=true to enable)")
 
             # Start SNI discovery if enabled in config (mirrors IP discovery)
-            _sni_discovery = build_sni_discovery(_conn_manager, config)
-            if _sni_discovery is not None:
-                _sni_discovery.start()
-                _log(f"Dynamic SNI discovery enabled — will sample Tranco/Umbrella/Majestic every {int(config.get('SNI_DISCOVERY_INTERVAL', 120))}s")
-                with _stats_lock:
-                    _stats["dynamic_sni_discovery"] = 1
+            if sni_axis:
+                _sni_discovery = build_sni_discovery(_conn_manager, config)
+                if _sni_discovery is not None:
+                    _sni_discovery.start()
+                    _log(f"Dynamic SNI discovery enabled — will sample Tranco/Umbrella/Majestic every {int(config.get('SNI_DISCOVERY_INTERVAL', 120))}s")
+                    with _stats_lock:
+                        _stats["dynamic_sni_discovery"] = 1
+                else:
+                    _log("Dynamic SNI discovery disabled (set DYNAMIC_SNI_DISCOVERY=true to enable)")
             else:
-                _log("Dynamic SNI discovery disabled (set DYNAMIC_SNI_DISCOVERY=true to enable)")
+                _log(f"Dynamic SNI discovery: skipped (IP-only pool for {method})")
         else:
             _log("Single-endpoint mode (no pool)")
 
@@ -225,15 +248,16 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
         listen_port  = int(config.get("LISTEN_PORT",  40443))
         connect_port = int(config.get("CONNECT_PORT", 443))
 
-        shaper = TrafficShaper.from_config(config)
-        if shaper.enabled:
-            _log(
-                f"Traffic shaping: ON (direction={shaper.direction}, "
-                f"chunk={shaper.min_chunk}-{shaper.max_chunk}B, "
-                f"delay={shaper.min_delay_ms}-{shaper.max_delay_ms}ms)"
-            )
-        else:
-            _log("Traffic shaping: off")
+        masker_rules = _load_finalmask_rules(config.get("FINALMASK_TCP"))
+        masker = FinalMasker.from_rules(masker_rules)
+        if masker is not None:
+            _log(f"FinalMask TCP: ON ({len(masker.layers)} layer(s))")
+
+        cipher_suites = config.get("CIPHER_SUITES")
+        if not isinstance(cipher_suites, (str, list, tuple, bytes)):
+            cipher_suites = None
+        if cipher_suites is not None:
+            _log("Custom cipherSuites: ON")
 
         _status     = "running"
         _start_time = time.monotonic()
@@ -266,7 +290,8 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
                 interface_ip    = interface_ip,
                 raw_injector    = raw_injector,
                 conn_manager    = _conn_manager,
-                shaper          = shaper,
+                masker          = masker,
+                cipher_suites   = cipher_suites,
             ))
             tick = asyncio.create_task(_ticker())
             while not _stop_event.is_set():
@@ -297,6 +322,103 @@ def _run_proxy(config_json, use_root_int):  # use_root_int kept for API compat, 
         _conn_manager  = None
         _ip_discovery  = None
         _sni_discovery = None
+
+
+def _run_mitm(config, use_root_int, ips, snis):
+    """TLS-terminating MITM relay (tls-decrypt / tls-repack)."""
+    global _status, _loop, _start_time, _conn_manager, _ip_discovery
+
+    from sni_spoofing.cli      import _load_finalmask_rules, _cipher_suites_to_openssl
+    from sni_spoofing.certs    import load_or_create
+    from sni_spoofing.mitm     import start_mitm_server
+    from sni_spoofing.pool     import build_connection_manager
+    from sni_spoofing.ip_discovery import build_ip_discovery
+
+    masker_rules = _load_finalmask_rules(config.get("FINALMASK_TCP"))
+    cipher_suites = _cipher_suites_to_openssl(config.get("CIPHER_SUITES"))
+
+    alpn = config.get("MITM_ALPN") or []
+    if isinstance(alpn, str):
+        alpn = [x.strip() for x in alpn.split(",") if x.strip()]
+    alpn = [str(x) for x in alpn]
+
+    cert_path, key_path, fingerprint = load_or_create(
+        cert_file=config.get("MITM_CERT_FILE"),
+        key_file=config.get("MITM_KEY_FILE"),
+        cn=str(config.get("MITM_CERT_CN", "SNISPF-HJ")),
+    )
+    _log(f"MITM TLS certificate: {cert_path}")
+    _log(f"MITM cert SHA-256 (pin this in your app): {fingerprint}")
+    with _stats_lock:
+        _stats["mitm_fingerprint"] = fingerprint
+
+    # IP-only pool: the upstream SNI is the client's real SNI
+    # (MITM_USE_CLIENT_SNI), so the SNI pool axis is meaningless.
+    _conn_manager = build_connection_manager(config, sni_axis=False)
+    if _conn_manager is not None:
+        total = len(_conn_manager.explorer.stats)
+        n_ips = len(ips)
+        _log(f"Pool built (IP-only): {n_ips} IPs = {total} pairs")
+        with _stats_lock:
+            _stats["pairs_total"]    = total
+            _stats["pairs_unprobed"] = total
+        _conn_manager.start_health_loop()
+
+        _ip_discovery = build_ip_discovery(_conn_manager, config)
+        if _ip_discovery is not None:
+            _ip_discovery.start()
+            _log(f"Dynamic IP discovery enabled — will scan Cloudflare CIDRs every {int(config.get('DISCOVERY_INTERVAL', 120))}s")
+            with _stats_lock:
+                _stats["dynamic_ip_discovery"] = 1
+        else:
+            _log("Dynamic IP discovery disabled (set DYNAMIC_IP_DISCOVERY=true to enable)")
+        _log("Dynamic SNI discovery: skipped (IP-only pool in MITM mode)")
+    else:
+        _log("Single-endpoint mode (no pool)")
+
+    _status     = "running"
+    _start_time = time.monotonic()
+    _log(f"MITM listening {config.get('LISTEN_HOST', '0.0.0.0')}:{int(config.get('LISTEN_PORT', 40443))} -> {config['CONNECT_IP']}:{int(config.get('CONNECT_PORT', 443))}")
+
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
+
+    async def _ticker():
+        tick = 0
+        while not _stop_event.is_set():
+            if _start_time:
+                with _stats_lock:
+                    _stats["uptime_seconds"] = int(time.monotonic() - _start_time)
+            if tick % 5 == 0:
+                _snapshot()
+            tick += 1
+            await asyncio.sleep(2)
+
+    async def _serve():
+        srv = asyncio.create_task(start_mitm_server(
+            listen_host=config.get("LISTEN_HOST", "0.0.0.0"),
+            listen_port=int(config.get("LISTEN_PORT", 40443)),
+            connect_ip=config["CONNECT_IP"],
+            connect_port=int(config.get("CONNECT_PORT", 443)),
+            fake_sni=config["FAKE_SNI"],
+            cipher_suites=cipher_suites,
+            alpn=alpn,
+            masker_rules=masker_rules,
+            cert_file=cert_path,
+            key_file=key_path,
+            use_client_sni=bool(config.get("MITM_USE_CLIENT_SNI", False)),
+            conn_manager=_conn_manager,
+        ))
+        tick = asyncio.create_task(_ticker())
+        while not _stop_event.is_set():
+            await asyncio.sleep(0.5)
+        tick.cancel()
+        srv.cancel()
+        for t in (tick, srv):
+            try:    await t
+            except: pass
+
+    _loop.run_until_complete(_serve())
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
