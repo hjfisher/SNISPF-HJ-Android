@@ -339,7 +339,11 @@ def _run_mitm(config, use_root_int, ips, snis):
 
     alpn = config.get("MITM_ALPN") or []
     if isinstance(alpn, str):
-        alpn = [x.strip() for x in alpn.split(",") if x.strip()]
+        alpn = [
+            x.strip().strip('"').strip("'")
+            for x in alpn.replace("[", "").replace("]", "").split(",")
+            if x.strip()
+        ]
     alpn = [str(x) for x in alpn]
 
     cert_path, key_path, fingerprint = load_or_create(
