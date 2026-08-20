@@ -114,11 +114,14 @@ fun BuilderState.toJson(): String {
         }
     }
     obj.put("MITM_CERT_CN",        mitmCertCn.ifBlank { "SNISPF-HJ" })
-    obj.put("MITM_ALPN",           mitmAlpn.replace("[", "").replace("]", "")
+    val alpnArr = JSONArray()
+    mitmAlpn.replace("[", "").replace("]", "")
         .split(',', ';', '\n')
         .map { it.trim().trim('"').trim('\'') }
         .filter { it.isNotBlank() }
-        .distinct())
+        .distinct()
+        .forEach { alpnArr.put(it) }
+    obj.put("MITM_ALPN", alpnArr)
     obj.put("MITM_USE_CLIENT_SNI", mitmUseClientSni)
 
     obj.put("ACTIVE_SLOTS",          activeSlots)

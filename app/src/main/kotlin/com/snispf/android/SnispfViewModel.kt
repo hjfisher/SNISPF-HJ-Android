@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONObject
 
 enum class ProxyStatus { STOPPED, STARTING, RUNNING, STOPPING, ERROR }
@@ -114,9 +115,24 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun saveConfig(json: String) {
-        prefs.edit().putString(KEY_CONFIG, json).apply()
-        val port = try { JSONObject(json).optInt("LISTEN_PORT", 40443) } catch (_: Exception) { 40443 }
-        updateState { copy(configJson = json, listenPort = port) }
+        val cleaned = try {
+            val o = JSONObject(json)
+            val alpn = o.opt("MITM_ALPN")
+            if (alpn is String) {
+                val arr = JSONArray()
+                alpn.replace("[", "").replace("]", "")
+                    .split(',', ';', '\n')
+                    .map { it.trim().trim('"').trim('\'') }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .forEach { arr.put(it) }
+                o.put("MITM_ALPN", arr)
+            }
+            o.toString(2)
+        } catch (_: Exception) { json }
+        prefs.edit().putString(KEY_CONFIG, cleaned).apply()
+        val port = try { JSONObject(cleaned).optInt("LISTEN_PORT", 40443) } catch (_: Exception) { 40443 }
+        updateState { copy(configJson = cleaned, listenPort = port) }
     }
 
     fun clearLogs() {
