@@ -68,7 +68,7 @@ data class BuilderState(
     // MITM relay (tls-decrypt / tls-repack)
     val mitmCertCn: String = "SNISPF-HJ",
     val mitmAlpn: String = "h2, http/1.1",
-    val mitmUseClientSni: Boolean = false,
+    val mitmUseClientSni: Boolean = true,
     // IP Discovery
     val dynamicDiscovery: Boolean = false,
     val discoveryBatch: Int = 100,
@@ -114,7 +114,11 @@ fun BuilderState.toJson(): String {
         }
     }
     obj.put("MITM_CERT_CN",        mitmCertCn.ifBlank { "SNISPF-HJ" })
-    obj.put("MITM_ALPN",           mitmAlpn.split(",").map { it.trim() }.filter { it.isNotBlank() })
+    obj.put("MITM_ALPN",           mitmAlpn.replace("[", "").replace("]", "")
+        .split(',', ';', '\n')
+        .map { it.trim().trim('"').trim('\'') }
+        .filter { it.isNotBlank() }
+        .distinct())
     obj.put("MITM_USE_CLIENT_SNI", mitmUseClientSni)
 
     obj.put("ACTIVE_SLOTS",          activeSlots)
@@ -228,13 +232,19 @@ fun builderFromJson(json: String): BuilderState {
             mitmCertCn       = o.optString("MITM_CERT_CN", "SNISPF-HJ"),
             mitmAlpn         = run {
                 val v = o.opt("MITM_ALPN")
-                when (v) {
-                    null -> "h2, http/1.1"
-                    is JSONArray -> (0 until v.length()).joinToString(", ") { v.getString(it) }
+                val raw = when (v) {
+                    null -> ""
+                    is JSONArray -> (0 until v.length()).joinToString(",") { v.getString(it) }
                     else -> v.toString()
                 }
+                raw.replace("[", "").replace("]", "")
+                    .split(',', ';', '\n')
+                    .map { it.trim().trim('"').trim('\'') }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .joinToString(", ")
             },
-            mitmUseClientSni = o.optBoolean("MITM_USE_CLIENT_SNI", false),
+            mitmUseClientSni = o.optBoolean("MITM_USE_CLIENT_SNI", true),
             listenHost       = o.optString("LISTEN_HOST", "0.0.0.0"),
             listenPort       = o.optInt("LISTEN_PORT", 40443),
             connectPort      = o.optInt("CONNECT_PORT", 443),

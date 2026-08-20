@@ -437,15 +437,6 @@ fun ConfigTab(state: UiState, vm: SnispfViewModel) {
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text("Config JSON", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-            Text(
-                "Build your config at hjfisher.github.io/SNISPF-HJ-Configurator then paste it here.",
-                modifier = Modifier.padding(12.dp),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
         Card(
             modifier = Modifier.fillMaxWidth().weight(1f),
             shape  = RoundedCornerShape(12.dp),

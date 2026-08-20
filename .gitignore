@@ -7,4 +7,20 @@ build/
 local.properties
 captures/
 .externalNativeBuild/
-.cxx/gradle/wrapper/gradle-wrapper.jar
+.cxx/
+
+# Gradle wrapper jar (binary build tool, kept out per "source only")
+gradle/wrapper/gradle-wrapper.jar
+
+# Signing & secrets — never commit
+*.jks
+*.keystore
+signing.txt
+*.key
+*.pem
+*.crt
+
+# Build artifacts
+*.apk
+*.aab
+*.idsig
