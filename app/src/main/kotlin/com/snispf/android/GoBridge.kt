@@ -159,7 +159,10 @@ class GoBridge(private val context: Context) {
 
             Log.d(TAG, "Executing: ${cmd.joinToString(" ")}")
 
-            process = Runtime.getRuntime().exec(cmd)
+            val pb = ProcessBuilder(cmd.toList())
+                .directory(binDir)
+                .redirectErrorStream(true)
+            process = pb.start()
             startReading()
 
             "ok"
