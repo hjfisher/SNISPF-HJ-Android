@@ -71,17 +71,33 @@ class GoBridge(private val context: Context) {
             val configFile = writeConfig(configJson)
             val binaryFile = extractBinary()
 
-            Log.d(TAG, "Binary: ${binaryFile.absolutePath} exists=${binaryFile.exists()} canExec=${binaryFile.canExecute()}")
+            // Validate files exist
+            Log.d(TAG, "=== Diagnostics ===")
+            Log.d(TAG, "ABI: ${Build.SUPPORTED_ABIS.firstOrNull()}")
+            Log.d(TAG, "Binary: ${binaryFile.absolutePath}")
+            Log.d(TAG, "  exists=${binaryFile.exists()} canExec=${binaryFile.canExecute()} length=${binaryFile.length()}")
             Log.d(TAG, "Config: ${configFile.absolutePath}")
+            Log.d(TAG, "  exists=${configFile.exists()} length=${configFile.length()}")
+            Log.d(TAG, "Config content: ${configFile.readText().take(500)}")
+            Log.d(TAG, "===================")
 
             val cmd = arrayOf(
                 "/system/bin/sh", "-c",
-                "${binaryFile.absolutePath} --config ${configFile.absolutePath} --no-raw"
+                "${binaryFile.absolutePath} --config ${configFile.absolutePath} --no-raw 2>&1"
             )
 
-            Log.d(TAG, "Starting: ${cmd.joinToString(" ")}")
+            Log.d(TAG, "Executing: ${cmd.joinToString(" ")}")
 
             process = Runtime.getRuntime().exec(cmd)
+
+            // Check if process exits immediately (within 2 seconds)
+            scope.launch {
+                delay(2000)
+                if (_status.value == "starting") {
+                    Log.d(TAG, "Process still starting after 2s — might be running")
+                }
+            }
+
             startReading()
 
             "ok"
@@ -137,9 +153,9 @@ class GoBridge(private val context: Context) {
         try {
             Os.chmod(binDir.absolutePath, 493)       // 0o755
             Os.chmod(binFile.absolutePath, 493)      // 0o755
-            Log.d(TAG, "Permissions set OK: dir=${binDir.canExecute()} bin=${binFile.canExecute()}")
+            Log.d(TAG, "Permissions set: dir=${binDir.canExecute()} bin=${binFile.canExecute()}")
         } catch (e: Exception) {
-            Log.e(TAG, "Os.chmod failed, trying File.setExecutable", e)
+            Log.e(TAG, "Os.chmod failed", e)
             binFile.setExecutable(true, false)
         }
 
@@ -149,28 +165,44 @@ class GoBridge(private val context: Context) {
     private fun startReading() {
         readJob = scope.launch {
             try {
-                val reader = BufferedReader(InputStreamReader(process?.inputStream ?: return@launch))
+                val p = process ?: return@launch
+                val reader = BufferedReader(InputStreamReader(p.inputStream))
+
+                // Read output in a loop
                 var line: String? = null
                 while (isActive && reader.readLine().also { line = it } != null) {
                     line?.let { processLine(it) }
                 }
-            } catch (e: Exception) {
-                if (isActive) {
-                    Log.e(TAG, "Read error", e)
-                }
-            } finally {
+
+                // Process exited — get exit code
+                val exitCode = p.waitFor()
+                Log.d(TAG, "Process exited with code: $exitCode")
+                addLog("[exit code: $exitCode]")
+
                 _status.value = "stopped"
+            } catch (e: Exception) {
+                Log.e(TAG, "Read error", e)
+                if (isActive) {
+                    _status.value = "stopped"
+                }
             }
         }
     }
 
     private fun processLine(line: String) {
+        Log.d(TAG, "GO> $line")
         logBuffer.add(line)
         if (logBuffer.size > 500) logBuffer.removeAt(0)
         _logs.value = logBuffer.toList()
 
         parseStats(line)
         updateMitmFingerprint(line)
+    }
+
+    private fun addLog(line: String) {
+        logBuffer.add(line)
+        if (logBuffer.size > 500) logBuffer.removeAt(0)
+        _logs.value = logBuffer.toList()
     }
 
     private fun parseStats(line: String) {
