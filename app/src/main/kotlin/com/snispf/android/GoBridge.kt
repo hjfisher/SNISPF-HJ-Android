@@ -2,6 +2,7 @@ package com.snispf.android
 
 import android.content.Context
 import android.os.Build
+import android.system.Os
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -70,15 +71,13 @@ class GoBridge(private val context: Context) {
             val configFile = writeConfig(configJson)
             val binaryFile = extractBinary()
 
-            val cmd = listOf(
+            Log.d(TAG, "Starting Go binary: ${binaryFile.absolutePath}")
+
+            val pb = ProcessBuilder(
                 binaryFile.absolutePath,
                 "--config", configFile.absolutePath,
                 "--no-raw"
             )
-
-            Log.d(TAG, "Starting Go binary: ${cmd.joinToString(" ")}")
-
-            val pb = ProcessBuilder(cmd)
                 .directory(binDir)
                 .redirectErrorStream(true)
 
@@ -134,7 +133,15 @@ class GoBridge(private val context: Context) {
             }
         }
 
-        binFile.setExecutable(true, false)
+        // Set executable permission using Os.chmod (works on all Android versions)
+        try {
+            Os.chmod(binFile.absolutePath, 448) // 0o755 = 448 decimal
+            Log.d(TAG, "Binary permissions set: ${binFile.canExecute()}")
+        } catch (e: Exception) {
+            Log.e(TAG, "chmod failed, trying setExecutable", e)
+            binFile.setExecutable(true, false)
+        }
+
         return binFile
     }
 
