@@ -1,6 +1,7 @@
 package com.snispf.android
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,7 +15,7 @@ private const val TAG = "GoBridge"
 
 data class GoStats(
     val poolActiveSlots: Int = 0,
-    val poolDraining: Int = 0,
+    val drainingSlots: Int = 0,
     val probedStable: Int = 0,
     val probedWeak: Int = 0,
     val probedDead: Int = 0,
@@ -54,6 +55,10 @@ class GoBridge(private val context: Context) {
     private val logBuffer = mutableListOf<String>()
     private val statsMap = mutableMapOf<String, String>()
 
+    private val binDir: File by lazy {
+        context.getDir("bin", Context.MODE_PRIVATE).also { it.mkdirs() }
+    }
+
     fun start(configJson: String): String {
         if (process != null) return "already_running"
 
@@ -74,7 +79,7 @@ class GoBridge(private val context: Context) {
             Log.d(TAG, "Starting Go binary: ${cmd.joinToString(" ")}")
 
             val pb = ProcessBuilder(cmd)
-                .directory(context.filesDir)
+                .directory(binDir)
                 .redirectErrorStream(true)
 
             process = pb.start()
@@ -105,20 +110,22 @@ class GoBridge(private val context: Context) {
     }
 
     private fun writeConfig(configJson: String): File {
-        val configFile = File(context.filesDir, "config.json")
+        val configFile = File(binDir, "config.json")
         configFile.writeText(configJson)
         return configFile
     }
 
     private fun extractBinary(): File {
-        val arch = System.getProperty("os.arch") ?: "aarch64"
-        val binName = when {
-            arch.contains("aarch64") || arch.contains("arm64") -> "snispf-arm64"
-            arch.contains("arm") -> "snispf-arm"
-            else -> "snispf-arm64"
+        val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+        val binName = when (abi) {
+            "arm64-v8a"                   -> "snispf-arm64"
+            "armeabi-v7a", "armeabi"      -> "snispf-arm"
+            "x86_64"                      -> "snispf-amd64"
+            "x86"                         -> "snispf-x86"
+            else                          -> "snispf-arm64"
         }
 
-        val binFile = File(context.filesDir, "snispf")
+        val binFile = File(binDir, "snispf")
         if (binFile.exists()) binFile.delete()
 
         context.assets.open("bin/$binName").use { input ->
@@ -127,7 +134,7 @@ class GoBridge(private val context: Context) {
             }
         }
 
-        binFile.setExecutable(true)
+        binFile.setExecutable(true, false)
         return binFile
     }
 
