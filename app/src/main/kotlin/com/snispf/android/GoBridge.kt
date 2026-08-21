@@ -10,7 +10,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.BufferedReader
 import java.io.File
+import java.io.FileOutputStream
 import java.io.InputStreamReader
+import java.util.zip.ZipInputStream
 
 private const val TAG = "GoBridge"
 
@@ -60,6 +62,59 @@ class GoBridge(private val context: Context) {
         context.getDir("bin", Context.MODE_PRIVATE).also { it.mkdirs() }
     }
 
+    private var extractedBinary: File? = null
+
+    init {
+        extractFromApk()
+    }
+
+    private fun extractFromApk() {
+        try {
+            val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+            val soName = "lib/$abi/libsnispf.so"
+            val outFile = File(binDir, "snispf")
+
+            if (outFile.exists() && outFile.canExecute()) {
+                Log.d(TAG, "Binary already extracted and executable")
+                extractedBinary = outFile
+                return
+            }
+
+            Log.d(TAG, "Extracting $soName from APK to ${outFile.absolutePath}")
+
+            val apkPath = context.applicationInfo.sourceDir
+            ZipInputStream(java.io.FileInputStream(apkPath)).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (entry.name == soName) {
+                        FileOutputStream(outFile).use { fos ->
+                            zis.copyTo(fos)
+                        }
+                        Log.d(TAG, "Extracted ${entry.name} -> ${outFile.absolutePath} (${outFile.length()} bytes)")
+
+                        // Set permissions
+                        try {
+                            Os.chmod(outFile.absolutePath, 493)  // 0o755
+                            Os.chmod(binDir.absolutePath, 493)    // 0o755
+                            Log.d(TAG, "chmod OK: canExec=${outFile.canExecute()}")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "chmod failed", e)
+                            outFile.setExecutable(true, false)
+                        }
+
+                        extractedBinary = outFile
+                        return@use
+                    }
+                    entry = zis.nextEntry
+                }
+            }
+
+            Log.e(TAG, "Binary not found in APK: $soName")
+        } catch (e: Exception) {
+            Log.e(TAG, "extractFromApk failed", e)
+        }
+    }
+
     fun start(configJson: String): String {
         if (process != null) return "already_running"
 
@@ -69,11 +124,11 @@ class GoBridge(private val context: Context) {
             statsMap.clear()
 
             val configFile = writeConfig(configJson)
-            val binaryFile = getBinary()
+            val binaryFile = extractedBinary
+                ?: return "error: Go binary not found in APK"
 
             Log.d(TAG, "=== Diagnostics ===")
             Log.d(TAG, "ABI: ${Build.SUPPORTED_ABIS.firstOrNull()}")
-            Log.d(TAG, "nativeLibDir: ${context.applicationInfo.nativeLibraryDir}")
             Log.d(TAG, "Binary: ${binaryFile.absolutePath}")
             Log.d(TAG, "  exists=${binaryFile.exists()} canExec=${binaryFile.canExecute()} length=${binaryFile.length()}")
             Log.d(TAG, "Config: ${configFile.absolutePath}")
@@ -118,15 +173,6 @@ class GoBridge(private val context: Context) {
         val configFile = File(binDir, "config.json")
         configFile.writeText(configJson)
         return configFile
-    }
-
-    private fun getBinary(): File {
-        // Android extracts jniLibs to nativeLibraryDir with execute permissions
-        val binaryFile = File(context.applicationInfo.nativeLibraryDir, "libsnispf.so")
-        if (!binaryFile.exists()) {
-            throw IllegalStateException("Native library not found: ${binaryFile.absolutePath}")
-        }
-        return binaryFile
     }
 
     private fun startReading() {
