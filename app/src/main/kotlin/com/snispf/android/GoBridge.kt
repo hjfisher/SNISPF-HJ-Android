@@ -37,6 +37,8 @@ data class GoStats(
     val totalConnections: Int = 0,
     val uptimeSeconds: Int = 0,
     val mitmFingerprint: String = "",
+    val ipDiscoveryReason: String = "",
+    val sniDiscoveryReason: String = "",
 )
 
 class GoBridge(private val context: Context) {
@@ -233,8 +235,24 @@ class GoBridge(private val context: Context) {
             line.contains("SNI discovery status") -> {
                 Regex("dynamic SNIs:\\s*(\\d+)").find(line)?.groupValues?.get(1)?.let { statsMap["dynamic_snis_found"] = it }
             }
-            line.contains("Dynamic IP discovery active") -> statsMap["dynamic_ip_discovery"] = "1"
-            line.contains("Dynamic SNI discovery active") -> statsMap["dynamic_sni_discovery"] = "1"
+            line.contains("Dynamic IP discovery active") -> {
+                statsMap["dynamic_ip_discovery"] = "1"
+                statsMap.remove("ip_discovery_reason")
+            }
+            line.contains("IP discovery enabled but no FAKE_SNIS") ->
+                statsMap["ip_discovery_reason"] = "on, but FAKE_SNIS is empty"
+            line.contains("Dynamic IP discovery: disabled") ->
+                statsMap["ip_discovery_reason"] = "off in config (DYNAMIC_IP_DISCOVERY=false)"
+            line.contains("Dynamic SNI discovery active") -> {
+                statsMap["dynamic_sni_discovery"] = "1"
+                statsMap.remove("sni_discovery_reason")
+            }
+            line.contains("Dynamic SNI discovery: skipped") ->
+                statsMap["sni_discovery_reason"] =
+                    if (line.contains("MITM")) "skipped — IP-only pool in MITM mode"
+                    else "skipped — IP-only pool for this method"
+            line.contains("Dynamic SNI discovery: disabled") ->
+                statsMap["sni_discovery_reason"] = "off in config (DYNAMIC_SNI_DISCOVERY=false)"
             // "[peer] MITM relay: ..." — one per client connection
             line.contains("MITM relay:") -> totalConnCount += 1
             // Quarantine tracking (best effort)
@@ -280,6 +298,8 @@ class GoBridge(private val context: Context) {
             uptimeSeconds = if (startedAtMillis > 0)
                 ((System.currentTimeMillis() - startedAtMillis) / 1000).toInt() else 0,
             mitmFingerprint = statsMap["mitm_fingerprint"] ?: "",
+            ipDiscoveryReason = statsMap["ip_discovery_reason"] ?: "",
+            sniDiscoveryReason = statsMap["sni_discovery_reason"] ?: "",
         )
     }
 }

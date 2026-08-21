@@ -40,6 +40,8 @@ data class PoolStats(
     val totalConnections: Int = 0,
     val uptimeSeconds: Int = 0,
     val mitmFingerprint: String = "",
+    val ipDiscoveryReason: String = "",
+    val sniDiscoveryReason: String = "",
 )
 
 data class UiState(
@@ -181,6 +183,8 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
                         totalConnections = goStats.totalConnections,
                         uptimeSeconds = goStats.uptimeSeconds,
                         mitmFingerprint = goStats.mitmFingerprint,
+                        ipDiscoveryReason = goStats.ipDiscoveryReason,
+                        sniDiscoveryReason = goStats.sniDiscoveryReason,
                     )
                     updateState { copy(logs = bridge.logs.value, pool = pool) }
                 }

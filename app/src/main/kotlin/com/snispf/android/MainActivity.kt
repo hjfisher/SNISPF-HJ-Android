@@ -322,8 +322,11 @@ fun StatsTab(state: UiState) {
         Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 StatRow("Status",
-                    if (p.dynamicDiscoveryEnabled) "Enabled" else "Disabled",
-                    if (p.dynamicDiscoveryEnabled) Color(0xFF4CAF50) else Color(0xFF757575)
+                    if (p.dynamicDiscoveryEnabled) "Enabled"
+                    else p.ipDiscoveryReason.ifBlank { "Disabled" },
+                    if (p.dynamicDiscoveryEnabled) Color(0xFF4CAF50)
+                    else if (p.ipDiscoveryReason.startsWith("skipped")) Color(0xFFFFC107)
+                    else Color(0xFF757575)
                 )
                 if (p.dynamicDiscoveryEnabled) {
                     StatRow("Static IPs (from config)", "${p.staticIpsCount}")
@@ -350,8 +353,11 @@ fun StatsTab(state: UiState) {
         Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 StatRow("Status",
-                    if (p.sniDynamicDiscoveryEnabled) "Enabled" else "Disabled",
-                    if (p.sniDynamicDiscoveryEnabled) Color(0xFF4CAF50) else Color(0xFF757575)
+                    if (p.sniDynamicDiscoveryEnabled) "Enabled"
+                    else p.sniDiscoveryReason.ifBlank { "Disabled" },
+                    if (p.sniDynamicDiscoveryEnabled) Color(0xFF4CAF50)
+                    else if (p.sniDiscoveryReason.startsWith("skipped")) Color(0xFFFFC107)
+                    else Color(0xFF757575)
                 )
                 if (p.sniDynamicDiscoveryEnabled) {
                     StatRow("Static SNIs (from config)", "${p.staticSnisCount}")
