@@ -197,6 +197,31 @@ class GoBridge(private val context: Context) {
 
     private fun parseStats(line: String) {
         when {
+            // Machine-readable snapshot printed every 5s by the Go binary.
+            // Authoritative — overrides everything derived from other lines.
+            line.contains("STATS ") -> {
+                for (m in Regex("(\\w+)=(\\d+)").findAll(line)) {
+                    val mapped = when (m.groupValues[1]) {
+                        "pairs"          -> "pairs_total"
+                        "stable"         -> "probed_stable"
+                        "weak"           -> "probed_weak"
+                        "dead"           -> "probed_dead"
+                        "unprobed"       -> "pairs_unprobed"
+                        "slots"          -> "pool_active_slots"
+                        "draining"       -> "pool_draining"
+                        "active_conns"   -> "active_connections"
+                        "total_conns"    -> "total_connections"
+                        "static_ips"     -> "static_ips_count"
+                        "dynamic_ips"    -> "dynamic_ips_found"
+                        "static_snis"    -> "static_snis_count"
+                        "dynamic_snis"   -> "dynamic_snis_found"
+                        "ip_quarantine"  -> "quarantine_ips"
+                        "sni_quarantine" -> "quarantine_snis"
+                        else             -> null
+                    }
+                    if (mapped != null) statsMap[mapped] = m.groupValues[2]
+                }
+            }
             // "Connection pool active -- N pair(s), M active slot(s)"
             line.contains("Connection pool active") && line.contains("pair(s)") -> {
                 statsMap["pairs_total"] = Regex("(\\d+) pair\\(s\\)").find(line)?.groupValues?.get(1) ?: ""
@@ -277,6 +302,7 @@ class GoBridge(private val context: Context) {
 
         _stats.value = GoStats(
             poolActiveSlots = statsMap["pool_active_slots"]?.toIntOrNull() ?: 0,
+            drainingSlots = statsMap["pool_draining"]?.toIntOrNull() ?: 0,
             probedStable = stable,
             probedWeak = weak,
             probedDead = dead,
@@ -293,8 +319,8 @@ class GoBridge(private val context: Context) {
             sniDynamicDiscoveryEnabled = statsMap["dynamic_sni_discovery"] == "1",
             quarantineSize = statsMap["quarantine_ips"]?.toIntOrNull() ?: 0,
             sniQuarantineSize = statsMap["quarantine_snis"]?.toIntOrNull() ?: 0,
-            activeConnections = activeConnAccum,
-            totalConnections = totalConnCount,
+            activeConnections = statsMap["active_connections"]?.toIntOrNull() ?: activeConnAccum,
+            totalConnections = statsMap["total_connections"]?.toIntOrNull() ?: totalConnCount,
             uptimeSeconds = if (startedAtMillis > 0)
                 ((System.currentTimeMillis() - startedAtMillis) / 1000).toInt() else 0,
             mitmFingerprint = statsMap["mitm_fingerprint"] ?: "",
