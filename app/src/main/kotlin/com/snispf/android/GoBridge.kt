@@ -69,35 +69,25 @@ class GoBridge(private val context: Context) {
             statsMap.clear()
 
             val configFile = writeConfig(configJson)
-            val binaryFile = extractBinary()
+            val binaryFile = getBinary()
 
-            // Validate files exist
             Log.d(TAG, "=== Diagnostics ===")
             Log.d(TAG, "ABI: ${Build.SUPPORTED_ABIS.firstOrNull()}")
+            Log.d(TAG, "nativeLibDir: ${context.applicationInfo.nativeLibraryDir}")
             Log.d(TAG, "Binary: ${binaryFile.absolutePath}")
             Log.d(TAG, "  exists=${binaryFile.exists()} canExec=${binaryFile.canExecute()} length=${binaryFile.length()}")
             Log.d(TAG, "Config: ${configFile.absolutePath}")
-            Log.d(TAG, "  exists=${configFile.exists()} length=${configFile.length()}")
-            Log.d(TAG, "Config content: ${configFile.readText().take(500)}")
             Log.d(TAG, "===================")
 
             val cmd = arrayOf(
-                "/system/bin/sh", "-c",
-                "${binaryFile.absolutePath} --config ${configFile.absolutePath} --no-raw 2>&1"
+                binaryFile.absolutePath,
+                "--config", configFile.absolutePath,
+                "--no-raw"
             )
 
             Log.d(TAG, "Executing: ${cmd.joinToString(" ")}")
 
             process = Runtime.getRuntime().exec(cmd)
-
-            // Check if process exits immediately (within 2 seconds)
-            scope.launch {
-                delay(2000)
-                if (_status.value == "starting") {
-                    Log.d(TAG, "Process still starting after 2s — might be running")
-                }
-            }
-
             startReading()
 
             "ok"
@@ -130,36 +120,13 @@ class GoBridge(private val context: Context) {
         return configFile
     }
 
-    private fun extractBinary(): File {
-        val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
-        val binName = when (abi) {
-            "arm64-v8a"                   -> "snispf-arm64"
-            "armeabi-v7a", "armeabi"      -> "snispf-arm"
-            "x86_64"                      -> "snispf-amd64"
-            "x86"                         -> "snispf-x86"
-            else                          -> "snispf-arm64"
+    private fun getBinary(): File {
+        // Android extracts jniLibs to nativeLibraryDir with execute permissions
+        val binaryFile = File(context.applicationInfo.nativeLibraryDir, "libsnispf.so")
+        if (!binaryFile.exists()) {
+            throw IllegalStateException("Native library not found: ${binaryFile.absolutePath}")
         }
-
-        val binFile = File(binDir, "snispf")
-        if (binFile.exists()) binFile.delete()
-
-        context.assets.open("bin/$binName").use { input ->
-            binFile.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-
-        // Set executable permissions on both directory and binary
-        try {
-            Os.chmod(binDir.absolutePath, 493)       // 0o755
-            Os.chmod(binFile.absolutePath, 493)      // 0o755
-            Log.d(TAG, "Permissions set: dir=${binDir.canExecute()} bin=${binFile.canExecute()}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Os.chmod failed", e)
-            binFile.setExecutable(true, false)
-        }
-
-        return binFile
+        return binaryFile
     }
 
     private fun startReading() {
@@ -168,13 +135,11 @@ class GoBridge(private val context: Context) {
                 val p = process ?: return@launch
                 val reader = BufferedReader(InputStreamReader(p.inputStream))
 
-                // Read output in a loop
                 var line: String? = null
                 while (isActive && reader.readLine().also { line = it } != null) {
                     line?.let { processLine(it) }
                 }
 
-                // Process exited — get exit code
                 val exitCode = p.waitFor()
                 Log.d(TAG, "Process exited with code: $exitCode")
                 addLog("[exit code: $exitCode]")
