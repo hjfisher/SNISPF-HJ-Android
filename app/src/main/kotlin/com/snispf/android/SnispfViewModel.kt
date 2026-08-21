@@ -142,37 +142,49 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
         pollJob = viewModelScope.launch(Dispatchers.IO) {
             val bridge = goBridge ?: return@launch
 
-            bridge.status.collect { st ->
-                val status = when (st) {
-                    "running"  -> ProxyStatus.RUNNING
-                    "starting" -> ProxyStatus.STARTING
-                    "stopping" -> ProxyStatus.STOPPING
-                    "error"    -> ProxyStatus.ERROR
-                    else       -> ProxyStatus.STOPPED
-                }
-
-                if (status == ProxyStatus.STOPPED || status == ProxyStatus.ERROR) {
+            launch {
+                bridge.status.collect { st ->
+                    val status = when (st) {
+                        "running"  -> ProxyStatus.RUNNING
+                        "starting" -> ProxyStatus.STARTING
+                        "stopping" -> ProxyStatus.STOPPING
+                        "error"    -> ProxyStatus.ERROR
+                        else       -> ProxyStatus.STOPPED
+                    }
                     updateState { copy(status = status) }
-                    return@collect
                 }
+            }
 
-                if (isInForeground) {
-                    val logs = bridge.logs.value
+            while (isActive) {
+                if (isInForeground && bridge.status.value == "running") {
                     val goStats = bridge.stats.value
-
                     val pool = PoolStats(
                         activeSlots = goStats.poolActiveSlots,
+                        drainingSlots = goStats.drainingSlots,
+                        probedStable = goStats.probedStable,
+                        probedWeak = goStats.probedWeak,
+                        probedDead = goStats.probedDead,
+                        probedTotal = goStats.probedTotal,
                         pairsTotal = goStats.pairsTotal,
+                        pairsProbed = goStats.pairsProbed,
+                        pairsUnprobed = goStats.pairsUnprobed,
+                        discoveryDone = goStats.discoveryDone,
                         staticIpsCount = goStats.staticIpsCount,
+                        dynamicIpsFound = goStats.dynamicIpsFound,
                         dynamicDiscoveryEnabled = goStats.dynamicDiscoveryEnabled,
+                        staticSnisCount = goStats.staticSnisCount,
+                        dynamicSnisFound = goStats.dynamicSnisFound,
                         sniDynamicDiscoveryEnabled = goStats.sniDynamicDiscoveryEnabled,
+                        quarantineSize = goStats.quarantineSize,
+                        sniQuarantineSize = goStats.sniQuarantineSize,
+                        activeConnections = goStats.activeConnections,
+                        totalConnections = goStats.totalConnections,
+                        uptimeSeconds = goStats.uptimeSeconds,
                         mitmFingerprint = goStats.mitmFingerprint,
                     )
-
-                    updateState { copy(status = status, logs = logs, pool = pool) }
-                } else {
-                    updateState { copy(status = status) }
+                    updateState { copy(logs = bridge.logs.value, pool = pool) }
                 }
+                delay(1000)
             }
         }
     }

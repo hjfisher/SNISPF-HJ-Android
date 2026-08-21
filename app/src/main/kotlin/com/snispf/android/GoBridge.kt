@@ -55,6 +55,9 @@ class GoBridge(private val context: Context) {
 
     private val logBuffer = mutableListOf<String>()
     private val statsMap = mutableMapOf<String, String>()
+    private var startedAtMillis: Long = 0
+    private var activeConnAccum = 0
+    private var totalConnCount = 0
 
     private val binDir: File by lazy {
         context.getDir("bin", Context.MODE_PRIVATE).also { it.mkdirs() }
@@ -102,6 +105,9 @@ class GoBridge(private val context: Context) {
                 .redirectErrorStream(true)
 
             process = pb.start()
+            startedAtMillis = System.currentTimeMillis()
+            activeConnAccum = 0
+            totalConnCount = 0
             startReading()
 
             "ok"
@@ -179,7 +185,6 @@ class GoBridge(private val context: Context) {
         _logs.value = logBuffer.toList()
 
         parseStats(line)
-        updateMitmFingerprint(line)
     }
 
     private fun addLog(line: String) {
@@ -190,46 +195,91 @@ class GoBridge(private val context: Context) {
 
     private fun parseStats(line: String) {
         when {
-            line.contains("pool active") || line.contains("Connection pool active") -> {
-                val pairs = Regex("(\\d+) pair\\(s\\)").find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                val slots = Regex("(\\d+) active slot").find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                statsMap["pairs_total"] = pairs.toString()
-                statsMap["pool_active_slots"] = slots.toString()
+            // "Connection pool active -- N pair(s), M active slot(s)"
+            line.contains("Connection pool active") && line.contains("pair(s)") -> {
+                statsMap["pairs_total"] = Regex("(\\d+) pair\\(s\\)").find(line)?.groupValues?.get(1) ?: ""
+                statsMap["pool_active_slots"] = Regex("(\\d+) active slot").find(line)?.groupValues?.get(1) ?: ""
             }
-            line.contains("IP-only") && line.contains("IP(s)") -> {
-                val ips = Regex("(\\d+) IP\\(s\\)").find(line)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                statsMap["static_ips_count"] = ips.toString()
+            // "Connection pool active (IP-only) -- N IP(s), M active slot(s)"
+            line.contains("Connection pool active") && line.contains("IP(s)") -> {
+                statsMap["static_ips_count"] = Regex("(\\d+) IP\\(s\\)").find(line)?.groupValues?.get(1) ?: ""
+                statsMap["pool_active_slots"] = Regex("(\\d+) active slot").find(line)?.groupValues?.get(1) ?: ""
             }
-            line.contains("Dynamic IP discovery active") -> {
-                statsMap["dynamic_ip_discovery"] = "1"
+            // "Upstream selection: POOL (N pair(s), M active slot(s))"
+            line.contains("Upstream selection: POOL") -> {
+                statsMap["pairs_total"] = Regex("(\\d+) pair\\(s\\)").find(line)?.groupValues?.get(1) ?: ""
+                statsMap["pool_active_slots"] = Regex("(\\d+) active slot").find(line)?.groupValues?.get(1) ?: ""
             }
-            line.contains("Dynamic SNI discovery active") -> {
-                statsMap["dynamic_sni_discovery"] = "1"
+            // "Pool summary — known=K stable=S weak=W dead=D unexplored=U"
+            line.contains("Pool summary") -> {
+                Regex("known=(\\d+)").find(line)?.groupValues?.get(1)?.let { statsMap["pairs_total"] = it }
+                Regex("stable=(\\d+)").find(line)?.groupValues?.get(1)?.let { statsMap["probed_stable"] = it }
+                Regex("weak=(\\d+)").find(line)?.groupValues?.get(1)?.let { statsMap["probed_weak"] = it }
+                Regex("dead=(\\d+)").find(line)?.groupValues?.get(1)?.let { statsMap["probed_dead"] = it }
+                Regex("unexplored=(\\d+)").find(line)?.groupValues?.get(1)?.let { statsMap["pairs_unprobed"] = it }
+                activeConnAccum = 0
             }
+            // Pool table row: "... loss=X% latency=Nms score=Y active=N"
+            line.contains("loss=") && line.contains("score=") && line.contains("active=") -> {
+                Regex("active=(\\d+)").find(line)?.groupValues?.get(1)?.toIntOrNull()?.let { activeConnAccum += it }
+            }
+            // "All combinations explored — reshuffling for next cycle."
+            line.contains("All combinations explored") -> statsMap["discovery_done"] = "1"
+            // "IP discovery status — dynamic IPs: D / MAX  total known: K"
+            line.contains("IP discovery status") -> {
+                Regex("dynamic IPs:\\s*(\\d+)").find(line)?.groupValues?.get(1)?.let { statsMap["dynamic_ips_found"] = it }
+            }
+            // "SNI discovery status — dynamic SNIs: D / MAX  total known: K  candidate pool: C"
+            line.contains("SNI discovery status") -> {
+                Regex("dynamic SNIs:\\s*(\\d+)").find(line)?.groupValues?.get(1)?.let { statsMap["dynamic_snis_found"] = it }
+            }
+            line.contains("Dynamic IP discovery active") -> statsMap["dynamic_ip_discovery"] = "1"
+            line.contains("Dynamic SNI discovery active") -> statsMap["dynamic_sni_discovery"] = "1"
+            // "[peer] MITM relay: ..." — one per client connection
+            line.contains("MITM relay:") -> totalConnCount += 1
+            // Quarantine tracking (best effort)
+            line.contains("Evicted IP") && line.contains("quarantine") ->
+                statsMap["quarantine_ips"] = ((statsMap["quarantine_ips"]?.toIntOrNull() ?: 0) + 1).toString()
+            line.contains("Recycled IP") ->
+                statsMap["quarantine_ips"] = maxOf(0, (statsMap["quarantine_ips"]?.toIntOrNull() ?: 0) - 1).toString()
+            line.contains("Evicted SNI") && line.contains("quarantine") ->
+                statsMap["quarantine_snis"] = ((statsMap["quarantine_snis"]?.toIntOrNull() ?: 0) + 1).toString()
+            line.contains("Recycled SNI") ->
+                statsMap["quarantine_snis"] = maxOf(0, (statsMap["quarantine_snis"]?.toIntOrNull() ?: 0) - 1).toString()
+            // "MITM cert SHA-256 (pin this): <fp>"
             line.contains("MITM cert SHA-256") -> {
                 val fp = line.substringAfter(":", "").trim()
                 if (fp.isNotBlank()) statsMap["mitm_fingerprint"] = fp
             }
         }
 
-        val pool = GoStats(
+        val stable = statsMap["probed_stable"]?.toIntOrNull() ?: 0
+        val weak = statsMap["probed_weak"]?.toIntOrNull() ?: 0
+        val dead = statsMap["probed_dead"]?.toIntOrNull() ?: 0
+
+        _stats.value = GoStats(
             poolActiveSlots = statsMap["pool_active_slots"]?.toIntOrNull() ?: 0,
+            probedStable = stable,
+            probedWeak = weak,
+            probedDead = dead,
+            probedTotal = stable + weak + dead,
             pairsTotal = statsMap["pairs_total"]?.toIntOrNull() ?: 0,
+            pairsProbed = stable + weak + dead,
+            pairsUnprobed = statsMap["pairs_unprobed"]?.toIntOrNull() ?: 0,
+            discoveryDone = statsMap["discovery_done"] == "1",
             staticIpsCount = statsMap["static_ips_count"]?.toIntOrNull() ?: 0,
+            dynamicIpsFound = statsMap["dynamic_ips_found"]?.toIntOrNull() ?: 0,
             dynamicDiscoveryEnabled = statsMap["dynamic_ip_discovery"] == "1",
+            staticSnisCount = statsMap["static_snis_count"]?.toIntOrNull() ?: 0,
+            dynamicSnisFound = statsMap["dynamic_snis_found"]?.toIntOrNull() ?: 0,
             sniDynamicDiscoveryEnabled = statsMap["dynamic_sni_discovery"] == "1",
+            quarantineSize = statsMap["quarantine_ips"]?.toIntOrNull() ?: 0,
+            sniQuarantineSize = statsMap["quarantine_snis"]?.toIntOrNull() ?: 0,
+            activeConnections = activeConnAccum,
+            totalConnections = totalConnCount,
+            uptimeSeconds = if (startedAtMillis > 0)
+                ((System.currentTimeMillis() - startedAtMillis) / 1000).toInt() else 0,
             mitmFingerprint = statsMap["mitm_fingerprint"] ?: "",
         )
-        _stats.value = pool
-    }
-
-    private fun updateMitmFingerprint(line: String) {
-        if (line.contains("SHA-256")) {
-            val fp = line.substringAfter(":", "").trim()
-            if (fp.isNotBlank() && fp.length == 64) {
-                statsMap["mitm_fingerprint"] = fp
-                _stats.value = _stats.value.copy(mitmFingerprint = fp)
-            }
-        }
     }
 }
