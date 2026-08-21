@@ -62,57 +62,73 @@ class GoBridge(private val context: Context) {
         context.getDir("bin", Context.MODE_PRIVATE).also { it.mkdirs() }
     }
 
-    private var extractedBinary: File? = null
+    private fun resolveBinary(): File? {
+        // Strategy 1: nativeLibraryDir (extracted by Android with extractNativeLibs=true)
+        val nativeLibDir = context.applicationInfo.nativeLibraryDir
+        val nativeBin = File(nativeLibDir, "libsnispf.so")
+        Log.d(TAG, "Checking nativeLibDir: ${nativeBin.absolutePath} exists=${nativeBin.exists()} canExec=${nativeBin.canExecute()}")
 
-    init {
-        extractFromApk()
-    }
+        if (nativeBin.exists()) {
+            return nativeBin
+        }
 
-    private fun extractFromApk() {
+        // Strategy 2: Extract from APK ZIP to nativeLibraryDir (writable, executable)
+        Log.d(TAG, "Binary not in nativeLibDir, extracting from APK...")
+        val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+        val soName = "lib/$abi/libsnispf.so"
+
         try {
-            val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
-            val soName = "lib/$abi/libsnispf.so"
-            val outFile = File(binDir, "snispf")
-
-            if (outFile.exists() && outFile.canExecute()) {
-                Log.d(TAG, "Binary already extracted and executable")
-                extractedBinary = outFile
-                return
-            }
-
-            Log.d(TAG, "Extracting $soName from APK to ${outFile.absolutePath}")
-
             val apkPath = context.applicationInfo.sourceDir
             ZipInputStream(java.io.FileInputStream(apkPath)).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
                     if (entry.name == soName) {
-                        FileOutputStream(outFile).use { fos ->
+                        FileOutputStream(nativeBin).use { fos ->
                             zis.copyTo(fos)
                         }
-                        Log.d(TAG, "Extracted ${entry.name} -> ${outFile.absolutePath} (${outFile.length()} bytes)")
+                        Log.d(TAG, "Extracted to nativeLibDir: ${nativeBin.length()} bytes")
 
-                        // Set permissions
                         try {
-                            Os.chmod(outFile.absolutePath, 493)  // 0o755
-                            Os.chmod(binDir.absolutePath, 493)    // 0o755
-                            Log.d(TAG, "chmod OK: canExec=${outFile.canExecute()}")
+                            Os.chmod(nativeBin.absolutePath, 493) // 0o755
                         } catch (e: Exception) {
-                            Log.e(TAG, "chmod failed", e)
-                            outFile.setExecutable(true, false)
+                            Log.w(TAG, "chmod failed (may be ok on nativeLibDir): ${e.message}")
                         }
 
-                        extractedBinary = outFile
-                        return@use
+                        return nativeBin
                     }
                     entry = zis.nextEntry
                 }
             }
-
-            Log.e(TAG, "Binary not found in APK: $soName")
         } catch (e: Exception) {
-            Log.e(TAG, "extractFromApk failed", e)
+            Log.e(TAG, "APK extraction failed", e)
         }
+
+        // Strategy 3: Fallback to getDir("bin") with chmod (may fail on noexec)
+        Log.w(TAG, "Falling back to getDir bin")
+        val fallbackBin = File(binDir, "snispf")
+
+        try {
+            val apkPath = context.applicationInfo.sourceDir
+            ZipInputStream(java.io.FileInputStream(apkPath)).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (entry.name == soName) {
+                        FileOutputStream(fallbackBin).use { fos ->
+                            zis.copyTo(fos)
+                        }
+                        try {
+                            Os.chmod(fallbackBin.absolutePath, 493)
+                        } catch (_: Exception) {}
+                        return fallbackBin
+                    }
+                    entry = zis.nextEntry
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Fallback extraction failed", e)
+        }
+
+        return null
     }
 
     fun start(configJson: String): String {
@@ -124,11 +140,12 @@ class GoBridge(private val context: Context) {
             statsMap.clear()
 
             val configFile = writeConfig(configJson)
-            val binaryFile = extractedBinary
-                ?: return "error: Go binary not found in APK"
+            val binaryFile = resolveBinary()
+                ?: return "error: Go binary not found"
 
             Log.d(TAG, "=== Diagnostics ===")
             Log.d(TAG, "ABI: ${Build.SUPPORTED_ABIS.firstOrNull()}")
+            Log.d(TAG, "nativeLibDir: ${context.applicationInfo.nativeLibraryDir}")
             Log.d(TAG, "Binary: ${binaryFile.absolutePath}")
             Log.d(TAG, "  exists=${binaryFile.exists()} canExec=${binaryFile.canExecute()} length=${binaryFile.length()}")
             Log.d(TAG, "Config: ${configFile.absolutePath}")
