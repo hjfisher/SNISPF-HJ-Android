@@ -149,7 +149,12 @@ class GoBridge(private val context: Context) {
                 val reader = BufferedReader(InputStreamReader(p.inputStream))
 
                 var line: String? = null
+                var firstLine = true
                 while (isActive && reader.readLine().also { line = it } != null) {
+                    if (firstLine) {
+                        _status.value = "running"
+                        firstLine = false
+                    }
                     line?.let { processLine(it) }
                 }
 
