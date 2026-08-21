@@ -71,17 +71,17 @@ class GoBridge(private val context: Context) {
             val configFile = writeConfig(configJson)
             val binaryFile = extractBinary()
 
-            Log.d(TAG, "Starting Go binary: ${binaryFile.absolutePath}")
+            Log.d(TAG, "Binary: ${binaryFile.absolutePath} exists=${binaryFile.exists()} canExec=${binaryFile.canExecute()}")
+            Log.d(TAG, "Config: ${configFile.absolutePath}")
 
-            val pb = ProcessBuilder(
-                binaryFile.absolutePath,
-                "--config", configFile.absolutePath,
-                "--no-raw"
+            val cmd = arrayOf(
+                "/system/bin/sh", "-c",
+                "${binaryFile.absolutePath} --config ${configFile.absolutePath} --no-raw"
             )
-                .directory(binDir)
-                .redirectErrorStream(true)
 
-            process = pb.start()
+            Log.d(TAG, "Starting: ${cmd.joinToString(" ")}")
+
+            process = Runtime.getRuntime().exec(cmd)
             startReading()
 
             "ok"
@@ -133,12 +133,13 @@ class GoBridge(private val context: Context) {
             }
         }
 
-        // Set executable permission using Os.chmod (works on all Android versions)
+        // Set executable permissions on both directory and binary
         try {
-            Os.chmod(binFile.absolutePath, 448) // 0o755 = 448 decimal
-            Log.d(TAG, "Binary permissions set: ${binFile.canExecute()}")
+            Os.chmod(binDir.absolutePath, 493)       // 0o755
+            Os.chmod(binFile.absolutePath, 493)      // 0o755
+            Log.d(TAG, "Permissions set OK: dir=${binDir.canExecute()} bin=${binFile.canExecute()}")
         } catch (e: Exception) {
-            Log.e(TAG, "chmod failed, trying setExecutable", e)
+            Log.e(TAG, "Os.chmod failed, trying File.setExecutable", e)
             binFile.setExecutable(true, false)
         }
 
