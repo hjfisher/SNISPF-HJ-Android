@@ -289,11 +289,16 @@ class GoBridge(private val context: Context) {
                 statsMap["quarantine_snis"] = ((statsMap["quarantine_snis"]?.toIntOrNull() ?: 0) + 1).toString()
             line.contains("Recycled SNI") ->
                 statsMap["quarantine_snis"] = maxOf(0, (statsMap["quarantine_snis"]?.toIntOrNull() ?: 0) - 1).toString()
-            // "MITM cert SHA-256 (pin this): <fp>"
+            // "MITM cert SHA-256 (pin this): <fp>" — extract the bare 64-hex hash;
+            // substringAfter(":") would grab the log timestamp's colons first.
             line.contains("MITM cert SHA-256") -> {
-                val fp = line.substringAfter(":", "").trim()
-                if (fp.isNotBlank()) statsMap["mitm_fingerprint"] = fp
+                Regex("[0-9a-fA-F]{64}").find(line)?.value?.let {
+                    statsMap["mitm_fingerprint"] = it
+                }
             }
+            // Bare 64-hex line (from the MITM banner print)
+            Regex("^[0-9a-fA-F]{64}$").containsMatchIn(line.trim()) ->
+                statsMap["mitm_fingerprint"] = line.trim()
         }
 
         val stable = statsMap["probed_stable"]?.toIntOrNull() ?: 0
