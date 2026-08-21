@@ -4,8 +4,6 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.chaquo.python.PyObject
-import com.chaquo.python.Python
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -26,12 +24,10 @@ data class PoolStats(
     val probedWeak: Int = 0,
     val probedDead: Int = 0,
     val probedTotal: Int = 0,
-    // Discovery — pairs_total GROWS as IPDiscovery injects new IPs
     val pairsTotal: Int = 0,
     val pairsProbed: Int = 0,
     val pairsUnprobed: Int = 0,
     val discoveryDone: Boolean = false,
-    // IPDiscovery
     val staticIpsCount: Int = 0,
     val dynamicIpsFound: Int = 0,
     val dynamicDiscoveryEnabled: Boolean = false,
@@ -40,11 +36,9 @@ data class PoolStats(
     val sniDynamicDiscoveryEnabled: Boolean = false,
     val quarantineSize: Int = 0,
     val sniQuarantineSize: Int = 0,
-    // Connections
     val activeConnections: Int = 0,
     val totalConnections: Int = 0,
     val uptimeSeconds: Int = 0,
-    // MITM relay — SHA-256 fingerprint of the self-signed cert (for pinning)
     val mitmFingerprint: String = "",
 )
 
@@ -71,7 +65,7 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
     )
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    private var bridge: PyObject? = null
+    private var goBridge: GoBridge? = null
     private var pollJob: Job? = null
 
     init {
@@ -82,9 +76,9 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                bridge = Python.getInstance().getModule("bridge")
+                goBridge = GoBridge(application)
             } catch (e: Exception) {
-                updateState { copy(errorMessage = "Python init failed: ${e.message}") }
+                updateState { copy(errorMessage = "Go bridge init failed: ${e.message}") }
             }
         }
     }
@@ -92,12 +86,11 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
     fun start() {
         val state = _uiState.value
         viewModelScope.launch(Dispatchers.IO) {
-            val b = bridge ?: return@launch
+            val bridge = goBridge ?: return@launch
             updateState { copy(status = ProxyStatus.STARTING, logs = emptyList(), errorMessage = null, pool = PoolStats()) }
-            val result = b.callAttr("start", state.configJson, 0).toString()
+            val result = bridge.start(state.configJson)
             when (result) {
                 "ok", "already_running" -> {
-                    // Start foreground service to prevent OS from killing the process
                     SnispfService.start(getApplication())
                     startPolling()
                 }
@@ -108,7 +101,7 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
 
     fun stop() {
         viewModelScope.launch(Dispatchers.IO) {
-            bridge?.callAttr("stop")
+            goBridge?.stop()
             updateState { copy(status = ProxyStatus.STOPPING) }
             SnispfService.stop(getApplication())
         }
@@ -137,23 +130,20 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
 
     fun clearLogs() {
         viewModelScope.launch(Dispatchers.IO) {
-            bridge?.callAttr("clear_logs")
+            goBridge?.clearLogs()
             updateState { copy(logs = emptyList()) }
         }
     }
 
-    // Track whether app is in foreground
     var isInForeground: Boolean = true
 
     private fun startPolling() {
         pollJob?.cancel()
         pollJob = viewModelScope.launch(Dispatchers.IO) {
-            while (isActive) {
-                val b = bridge ?: break
+            val bridge = goBridge ?: return@launch
 
-                val statusStr = b.callAttr("get_status").toString()
-
-                val status = when (statusStr) {
+            bridge.status.collect { st ->
+                val status = when (st) {
                     "running"  -> ProxyStatus.RUNNING
                     "starting" -> ProxyStatus.STARTING
                     "stopping" -> ProxyStatus.STOPPING
@@ -163,54 +153,25 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
 
                 if (status == ProxyStatus.STOPPED || status == ProxyStatus.ERROR) {
                     updateState { copy(status = status) }
-                    break
+                    return@collect
                 }
 
-                // Only fetch logs and stats when app is visible
                 if (isInForeground) {
-                    val logsStr  = b.callAttr("get_logs").toString()
-                    val statsStr = b.callAttr("get_stats").toString()
-
-                    val logs = if (logsStr.isBlank()) emptyList()
-                               else logsStr.split("\n").filter { it.isNotBlank() }
-
-                    val m = statsStr.lines()
-                        .filter { "=" in it }
-                        .associate { it.substringBefore("=").trim() to it.substringAfter("=").trim() }
-
-                    fun i(key: String) = m[key]?.toIntOrNull() ?: 0
+                    val logs = bridge.logs.value
+                    val goStats = bridge.stats.value
 
                     val pool = PoolStats(
-                        activeSlots             = i("pool_active_slots"),
-                        drainingSlots           = i("pool_draining"),
-                        probedStable            = i("probed_stable"),
-                        probedWeak              = i("probed_weak"),
-                        probedDead              = i("probed_dead"),
-                        probedTotal             = i("probed_total"),
-                        pairsTotal              = i("pairs_total"),
-                        pairsProbed             = i("pairs_probed"),
-                        pairsUnprobed           = i("pairs_unprobed"),
-                        discoveryDone           = i("discovery_done") == 1,
-                        staticIpsCount             = i("static_ips_count"),
-                        dynamicIpsFound            = i("dynamic_ips_found"),
-                        dynamicDiscoveryEnabled    = i("dynamic_ip_discovery") == 1,
-                        staticSnisCount            = i("static_snis_count"),
-                        dynamicSnisFound           = i("dynamic_snis_found"),
-                        sniDynamicDiscoveryEnabled = i("dynamic_sni_discovery") == 1,
-                        quarantineSize             = i("quarantine_size"),
-                        sniQuarantineSize          = i("sni_quarantine_size"),
-                        activeConnections       = i("active_connections"),
-                        totalConnections        = i("total_connections"),
-                        uptimeSeconds           = i("uptime_seconds"),
-                        mitmFingerprint         = m["mitm_fingerprint"]?.trim().orEmpty(),
+                        activeSlots = goStats.poolActiveSlots,
+                        pairsTotal = goStats.pairsTotal,
+                        staticIpsCount = goStats.staticIpsCount,
+                        dynamicDiscoveryEnabled = goStats.dynamicDiscoveryEnabled,
+                        sniDynamicDiscoveryEnabled = goStats.sniDynamicDiscoveryEnabled,
+                        mitmFingerprint = goStats.mitmFingerprint,
                     )
 
                     updateState { copy(status = status, logs = logs, pool = pool) }
-                    delay(1500)
                 } else {
-                    // Background: only keep-alive check every 10s, no UI updates
                     updateState { copy(status = status) }
-                    delay(10_000)
                 }
             }
         }
@@ -223,7 +184,7 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
     override fun onCleared() {
         super.onCleared()
         pollJob?.cancel()
-        bridge?.callAttr("stop")
+        goBridge?.stop()
     }
 }
 
@@ -236,12 +197,13 @@ const val DEFAULT_CONFIG = """{
   "FRAGMENT_DELAY": 0.1,
   "FAKE_SNI_METHOD": "prefix_fake",
   "CIPHER_SUITES": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256:TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256",
-  "FINALMASK_TCP": {"type": "fragment", "settings": {"packets": "tlshello", "lengths": ["50-100"], "delays": ["1-10"], "maxSplit": "10"}},
+  "FINALMASK_TCP": [{"type": "fragment", "settings": {"packets": "tlshello", "lengths": ["50-100"], "delays": ["1-10"], "maxSplit": "10"}}],
   "MITM_CERT_FILE": null,
   "MITM_KEY_FILE": null,
   "MITM_CERT_CN": "SNISPF-HJ",
   "MITM_ALPN": ["h2", "http/1.1"],
   "MITM_USE_CLIENT_SNI": true,
+  "FINGERPRINT": "unsafe",
   "ACTIVE_SLOTS": 10,
   "HEALTH_CHECK_INTERVAL": 30,
   "HEALTH_CHECK_TIMEOUT": 30,

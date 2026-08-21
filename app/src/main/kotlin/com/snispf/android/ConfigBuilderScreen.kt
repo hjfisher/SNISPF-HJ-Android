@@ -69,6 +69,7 @@ data class BuilderState(
     val mitmCertCn: String = "SNISPF-HJ",
     val mitmAlpn: String = "h2, http/1.1",
     val mitmUseClientSni: Boolean = true,
+    val fingerprint: String = "unsafe",
     // IP Discovery
     val dynamicDiscovery: Boolean = false,
     val discoveryBatch: Int = 100,
@@ -123,6 +124,7 @@ fun BuilderState.toJson(): String {
         .forEach { alpnArr.put(it) }
     obj.put("MITM_ALPN", alpnArr)
     obj.put("MITM_USE_CLIENT_SNI", mitmUseClientSni)
+    if (fingerprint.isNotBlank()) obj.put("FINGERPRINT", fingerprint.trim()) else obj.put("FINGERPRINT", null as String?)
 
     obj.put("ACTIVE_SLOTS",          activeSlots)
         obj.put("HEALTH_CHECK_INTERVAL", healthInterval)
@@ -248,6 +250,7 @@ fun builderFromJson(json: String): BuilderState {
                     .joinToString(", ")
             },
             mitmUseClientSni = o.optBoolean("MITM_USE_CLIENT_SNI", true),
+            fingerprint      = o.optString("FINGERPRINT", "unsafe"),
             listenHost       = o.optString("LISTEN_HOST", "0.0.0.0"),
             listenPort       = o.optInt("LISTEN_PORT", 40443),
             connectPort      = o.optInt("CONNECT_PORT", 443),
@@ -360,6 +363,25 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                             sublabel = "Forward the client's real SNI upstream instead of the decoy (recommended for VLESS/WS workers)",
                             checked  = bs.mitmUseClientSni,
                             onChange = { bs = bs.copy(mitmUseClientSni = it); saved = false }
+                        )
+                        BDropdown(
+                            label   = "TLS Fingerprint",
+                            value   = bs.fingerprint,
+                            options = listOf(
+                                "unsafe"         to "unsafe — Plain Go TLS (no impersonation)",
+                                "chrome"         to "chrome — Chrome 133 (default)",
+                                "firefox"        to "firefox — Firefox 120",
+                                "safari"         to "safari — Safari 16.0",
+                                "ios"            to "ios — iOS 14",
+                                "android"        to "android — Android 11 OkHttp",
+                                "edge"           to "edge — Edge/Chromium 85",
+                                "360"            to "360 — Qihoo 360 7.5",
+                                "qq"             to "qq — QQ 11.1",
+                                "random"         to "random — Different browser per connection",
+                                "randomized"     to "randomized — Unique randomized hello",
+                                "randomizednoalpn" to "randomizednoalpn — Randomized, no ALPN",
+                            ),
+                            onChange = { bs = bs.copy(fingerprint = it); saved = false }
                         )
                     }
                     if (bs.bypassMethod == "fragment" || bs.bypassMethod == "fake_sni" || bs.bypassMethod == "combined") {

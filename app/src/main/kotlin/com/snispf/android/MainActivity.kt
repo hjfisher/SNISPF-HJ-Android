@@ -37,8 +37,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.chaquo.python.android.AndroidPlatform
-import com.chaquo.python.Python
 
 class MainActivity : ComponentActivity() {
     private lateinit var vm: SnispfViewModel
@@ -57,8 +55,6 @@ class MainActivity : ComponentActivity() {
                 notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-
-        if (!Python.isStarted()) Python.start(AndroidPlatform(this))
 
         setContent {
             vm = viewModel()
