@@ -39,50 +39,80 @@ jobs:
           build-tools-version: 34.0.0
           cmake-version: 3.22.1
 
-      - name: Make gradlew executable
-        run: chmod +x gradlew
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
 
-      - name: Build x86 (32-bit) shared library
+      - name: Generate Gradle Wrapper
         run: |
-          cd ..
-          # Set up NDK toolchain for x86
+          cd SNISPF-HJ-Android
+          gradle wrapper --gradle-version 8.2.2 --distribution-type all
+          chmod +x gradlew
+
+      - name: Build all architecture libraries from source
+        run: |
+          cd SNISPF-HJ-GO
+          
+          # arm64-v8a
           export NDK_ROOT=$ANDROID_NDK_ROOT
           export TOOLCHAIN=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
-          export CC=$TOOLCHAIN/bin/i686-linux-android26-clang
-          export CXX=$TOOLCHAIN/bin/i686-linux-android26-clang++
+          export CC=$TOOLCHAIN/bin/aarch64-linux-android26-clang
+          export CXX=$TOOLCHAIN/bin/aarch64-linux-android26-clang++
           export GOOS=android
-          export GOARCH=386
+          export GOARCH=arm64
           export CGO_ENABLED=1
           export CGO_CFLAGS="-O2 -fPIC"
           export CGO_LDFLAGS="-shared"
-          cd SNISPF-HJ-GO
-          $CC --version
+          go build -buildmode=c-shared -o ../SNISPF-HJ-Android/app/src/main/jniLibs/arm64-v8a/libsnispf.so .
+          
+          # armeabi-v7a
+          export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi26-clang
+          export CXX=$TOOLCHAIN/bin/armv7a-linux-androideabi26-clang++
+          export GOARCH=arm
+          export GOARM=7
+          go build -buildmode=c-shared -o ../SNISPF-HJ-Android/app/src/main/jniLibs/armeabi-v7a/libsnispf.so .
+          
+          # x86_64
+          export CC=$TOOLCHAIN/bin/x86_64-linux-android26-clang
+          export CXX=$TOOLCHAIN/bin/x86_64-linux-android26-clang++
+          export GOARCH=amd64
+          unset GOARM
+          go build -buildmode=c-shared -o ../SNISPF-HJ-Android/app/src/main/jniLibs/x86_64/libsnispf.so .
+          
+          # x86 (32-bit)
+          export CC=$TOOLCHAIN/bin/i686-linux-android26-clang
+          export CXX=$TOOLCHAIN/bin/i686-linux-android26-clang++
+          export GOARCH=386
           go build -buildmode=c-shared -o ../SNISPF-HJ-Android/app/src/main/jniLibs/x86/libsnispf.so .
-        working-directory: ${{ github.workspace }}
 
-      - name: Verify x86 library
+      - name: Verify all libraries
         run: |
-          ls -la app/src/main/jniLibs/x86/
-          file app/src/main/jniLibs/x86/libsnispf.so
+          ls -la SNISPF-HJ-Android/app/src/main/jniLibs/*/libsnispf.so
+          file SNISPF-HJ-Android/app/src/main/jniLibs/*/libsnispf.so
 
       - name: Build Release APKs (all architectures)
-        run: ./gradlew assembleRelease
+        run: |
+          cd SNISPF-HJ-Android
+          ./gradlew assembleRelease
 
       - name: Build Release AAB (for Play Store)
-        run: ./gradlew bundleRelease
+        run: |
+          cd SNISPF-HJ-Android
+          ./gradlew bundleRelease
 
       - name: List build outputs
         run: |
-          find . -name "*.apk" -o -name "*.aab" | head -20
-          ls -la app/build/outputs/apk/release/
-          ls -la app/build/outputs/bundle/release/
+          find SNISPF-HJ-Android -name "*.apk" -o -name "*.aab" | head -20
+          ls -la SNISPF-HJ-Android/app/build/outputs/apk/release/
+          ls -la SNISPF-HJ-Android/app/build/outputs/bundle/release/
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-apks
           path: |
-            app/build/outputs/apk/release/*.apk
+            SNISPF-HJ-Android/app/build/outputs/apk/release/*.apk
           retention-days: 30
 
       - name: Upload AAB artifact
@@ -90,7 +120,7 @@ jobs:
         with:
           name: release-aab
           path: |
-            app/build/outputs/bundle/release/*.aab
+            SNISPF-HJ-Android/app/build/outputs/bundle/release/*.aab
           retention-days: 30
 
   release:
