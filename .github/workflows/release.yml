@@ -50,9 +50,6 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Make gradlew executable
-        run: chmod +x gradlew
-
       - name: Clone Go project
         run: git clone https://github.com/hjfisher/SNISPF-HJ-GO.git ../SNISPF-HJ-GO
 
@@ -92,14 +89,14 @@ jobs:
           file app/src/main/jniLibs/*/libsnispf.so
 
       - name: Build Release APKs (all architectures)
-        run: ./gradlew assembleRelease
+        run: gradle assembleRelease
 
       - name: Build Release AAB (for Play Store)
-        run: ./gradlew bundleRelease
+        run: gradle bundleRelease
 
       - name: List build outputs
         run: |
-          find . -name "*.apk" -o -name "*.aab" | head -20
+          find . -name "*.apk" -o -name "*.aab"
           ls -la app/build/outputs/apk/release/
           ls -la app/build/outputs/bundle/release/
 
