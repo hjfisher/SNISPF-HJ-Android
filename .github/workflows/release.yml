@@ -50,6 +50,9 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Clone Go project
+        run: git clone https://github.com/hjfisher/SNISPF-HJ-GO.git ../SNISPF-HJ-GO
+
       - name: Build all architecture libraries from source
         run: |
           cd ../SNISPF-HJ-GO
