@@ -52,6 +52,9 @@ jobs:
         with:
           gradle-version: '8.4'
 
+      - name: Decode keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > my-key.jks
+
       - name: Clone Go project
         run: git clone https://github.com/hjfisher/SNISPF-HJ-GO.git ../SNISPF-HJ-GO
 
@@ -90,32 +93,73 @@ jobs:
           ls -la app/src/main/jniLibs/*/libsnispf.so
           file app/src/main/jniLibs/*/libsnispf.so
 
-      - name: Build Release APKs (all architectures)
+      - name: Build Release APKs
         run: gradle assembleRelease
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/my-key.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
-      - name: Build Release AAB (for Play Store)
-        run: gradle bundleRelease
+      - name: Build Debug APKs
+        run: gradle assembleDebug
 
-      - name: List build outputs
+      - name: Sign APKs with apksigner
         run: |
-          find . -name "*.apk" -o -name "*.aab"
-          ls -la app/build/outputs/apk/release/
-          ls -la app/build/outputs/bundle/release/
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
+          SIGNER=$BUILD_TOOLS/apksigner
+          
+          # Sign release APKs
+          mkdir -p signed/release signed/debug
+          for apk in app/build/outputs/apk/release/*.apk; do
+            name=$(basename "$apk")
+            $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --out "signed/release/$name" "$apk"
+          done
+          
+          # Debug APKs (already signed by gradle, re-sign for consistency)
+          for apk in app/build/outputs/apk/debug/*.apk; do
+            name=$(basename "$apk")
+            $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --out "signed/debug/$name" "$apk"
+          done
 
-      - name: Upload APK artifacts
+      - name: Rename APKs to SNISPF-HJ-ANDROID
+        run: |
+          mkdir -p final
+          TAG="${{ github.ref_name }}"
+          
+          # Release APKs
+          for apk in signed/release/*.apk; do
+            name=$(basename "$apk")
+            abi=$(echo "$name" | sed 's/.*-\(arm64-v8a\|armeabi-v7a\|x86_64\).*/\1/')
+            if [ "$abi" != "$name" ]; then
+              cp "$apk" "final/SNISPF-HJ-ANDROID-${TAG}-release-${abi}.apk"
+            fi
+          done
+          
+          # Debug APKs
+          for apk in signed/debug/*.apk; do
+            name=$(basename "$apk")
+            abi=$(echo "$name" | sed 's/.*-\(arm64-v8a\|armeabi-v7a\|x86_64\).*/\1/')
+            if [ "$abi" != "$name" ]; then
+              cp "$apk" "final/SNISPF-HJ-ANDROID-${TAG}-debug-${abi}.apk"
+            fi
+          done
+          
+          echo "=== Final APKs ==="
+          ls -la final/
+
+      - name: Upload Release APKs
         uses: actions/upload-artifact@v4
         with:
           name: release-apks
-          path: |
-            app/build/outputs/apk/release/*.apk
+          path: final/SNISPF-HJ-ANDROID-*-release-*.apk
           retention-days: 30
 
-      - name: Upload AAB artifact
+      - name: Upload Debug APKs
         uses: actions/upload-artifact@v4
         with:
-          name: release-aab
-          path: |
-            app/build/outputs/bundle/release/*.aab
+          name: debug-apks
+          path: final/SNISPF-HJ-ANDROID-*-debug-*.apk
           retention-days: 30
 
   release:
@@ -123,22 +167,24 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download APK artifacts
+      - name: Download Release APKs
         uses: actions/download-artifact@v4
         with:
           name: release-apks
-          path: artifacts/apks
+          path: artifacts/release
 
-      - name: Download AAB artifact
+      - name: Download Debug APKs
         uses: actions/download-artifact@v4
         with:
-          name: release-aab
-          path: artifacts/aab
+          name: debug-apks
+          path: artifacts/debug
 
       - name: List artifacts
         run: |
-          ls -la artifacts/apks/
-          ls -la artifacts/aab/
+          echo "=== Release APKs ==="
+          ls -la artifacts/release/
+          echo "=== Debug APKs ==="
+          ls -la artifacts/debug/
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -149,7 +195,7 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            artifacts/apks/*.apk
-            artifacts/aab/*.aab
+            artifacts/release/*.apk
+            artifacts/debug/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
