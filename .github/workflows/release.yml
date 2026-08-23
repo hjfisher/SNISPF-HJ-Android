@@ -103,6 +103,9 @@ jobs:
         run: gradle assembleDebug
 
       - name: Sign and rename APKs
+        env:
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.KEY_PASSWORD }}
         run: |
           BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
           SIGNER=$BUILD_TOOLS/apksigner
@@ -115,7 +118,7 @@ jobs:
             name=$(basename "$apk")
             abi=$(echo "$name" | sed 's/.*-\(arm64-v8a\|armeabi-v7a\|x86_64\).*/\1/')
             if [ "$abi" != "$name" ]; then
-              $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --out "final/SNISPF-HJ-ANDROID-${TAG}-release-${abi}.apk" "$apk"
+              $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --ks-pass "pass:$KS_PASS" --key-pass "pass:$KEY_PASS" --out "final/SNISPF-HJ-ANDROID-${TAG}-release-${abi}.apk" "$apk"
             fi
           done
           
@@ -124,7 +127,7 @@ jobs:
             name=$(basename "$apk")
             abi=$(echo "$name" | sed 's/.*-\(arm64-v8a\|armeabi-v7a\|x86_64\).*/\1/')
             if [ "$abi" != "$name" ]; then
-              $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --out "final/SNISPF-HJ-ANDROID-${TAG}-debug-${abi}.apk" "$apk"
+              $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --ks-pass "pass:$KS_PASS" --key-pass "pass:$KEY_PASS" --out "final/SNISPF-HJ-ANDROID-${TAG}-debug-${abi}.apk" "$apk"
             fi
           done
           
