@@ -53,7 +53,11 @@ jobs:
           gradle-version: '8.4'
 
       - name: Decode keystore
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > my-key.jks
+        run: |
+          printenv KEYSTORE_BASE64 | tr -d '\r\n' | base64 -d > my-key.jks
+          ls -la my-key.jks
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
 
       - name: Verify keystore
         run: keytool -list -keystore my-key.jks -storepass ${{ secrets.KEYSTORE_PASSWORD }} -v
