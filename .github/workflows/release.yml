@@ -55,6 +55,9 @@ jobs:
       - name: Decode keystore
         run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > my-key.jks
 
+      - name: Verify keystore
+        run: keytool -list -keystore my-key.jks -storepass ${{ secrets.KEYSTORE_PASSWORD }} -v
+
       - name: Clone Go project
         run: git clone https://github.com/hjfisher/SNISPF-HJ-GO.git ../SNISPF-HJ-GO
 
@@ -95,53 +98,33 @@ jobs:
 
       - name: Build Release APKs
         run: gradle assembleRelease
-        env:
-          KEYSTORE_PATH: ${{ github.workspace }}/my-key.jks
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
       - name: Build Debug APKs
         run: gradle assembleDebug
 
-      - name: Sign APKs with apksigner
+      - name: Sign and rename APKs
         run: |
           BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/*/ | sort -V | tail -1)
           SIGNER=$BUILD_TOOLS/apksigner
-          
-          # Sign release APKs
-          mkdir -p signed/release signed/debug
-          for apk in app/build/outputs/apk/release/*.apk; do
-            name=$(basename "$apk")
-            $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --out "signed/release/$name" "$apk"
-          done
-          
-          # Debug APKs (already signed by gradle, re-sign for consistency)
-          for apk in app/build/outputs/apk/debug/*.apk; do
-            name=$(basename "$apk")
-            $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --out "signed/debug/$name" "$apk"
-          done
-
-      - name: Rename APKs to SNISPF-HJ-ANDROID
-        run: |
-          mkdir -p final
           TAG="${{ github.ref_name }}"
           
-          # Release APKs
-          for apk in signed/release/*.apk; do
+          mkdir -p final
+          
+          # Sign and rename release APKs
+          for apk in app/build/outputs/apk/release/*.apk; do
             name=$(basename "$apk")
             abi=$(echo "$name" | sed 's/.*-\(arm64-v8a\|armeabi-v7a\|x86_64\).*/\1/')
             if [ "$abi" != "$name" ]; then
-              cp "$apk" "final/SNISPF-HJ-ANDROID-${TAG}-release-${abi}.apk"
+              $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --out "final/SNISPF-HJ-ANDROID-${TAG}-release-${abi}.apk" "$apk"
             fi
           done
           
-          # Debug APKs
-          for apk in signed/debug/*.apk; do
+          # Sign and rename debug APKs
+          for apk in app/build/outputs/apk/debug/*.apk; do
             name=$(basename "$apk")
             abi=$(echo "$name" | sed 's/.*-\(arm64-v8a\|armeabi-v7a\|x86_64\).*/\1/')
             if [ "$abi" != "$name" ]; then
-              cp "$apk" "final/SNISPF-HJ-ANDROID-${TAG}-debug-${abi}.apk"
+              $SIGNER sign --ks my-key.jks --ks-key-alias ${{ secrets.KEY_ALIAS }} --out "final/SNISPF-HJ-ANDROID-${TAG}-debug-${abi}.apk" "$apk"
             fi
           done
           
