@@ -68,31 +68,31 @@ jobs:
         run: |
           cd ../SNISPF-HJ-GO
           
-          # arm64-v8a
           export NDK_ROOT=$ANDROID_NDK_ROOT
           export TOOLCHAIN=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
+          export GOOS=android
+          export CGO_ENABLED=1
+          
+          # arm64-v8a
           export CC=$TOOLCHAIN/bin/aarch64-linux-android26-clang
           export CXX=$TOOLCHAIN/bin/aarch64-linux-android26-clang++
-          export GOOS=android
           export GOARCH=arm64
-          export CGO_ENABLED=1
-          export CGO_CFLAGS="-O2 -fPIC"
-          export CGO_LDFLAGS="-shared"
-          go build -buildmode=c-shared -o ../SNISPF-HJ-Android/app/src/main/jniLibs/arm64-v8a/libsnispf.so .
+          export GOARM=
+          go build -o ../SNISPF-HJ-Android/app/src/main/jniLibs/arm64-v8a/libsnispf.so .
           
           # armeabi-v7a
           export CC=$TOOLCHAIN/bin/armv7a-linux-androideabi26-clang
           export CXX=$TOOLCHAIN/bin/armv7a-linux-androideabi26-clang++
           export GOARCH=arm
           export GOARM=7
-          go build -buildmode=c-shared -o ../SNISPF-HJ-Android/app/src/main/jniLibs/armeabi-v7a/libsnispf.so .
+          go build -o ../SNISPF-HJ-Android/app/src/main/jniLibs/armeabi-v7a/libsnispf.so .
           
           # x86_64
           export CC=$TOOLCHAIN/bin/x86_64-linux-android26-clang
           export CXX=$TOOLCHAIN/bin/x86_64-linux-android26-clang++
           export GOARCH=amd64
-          unset GOARM
-          go build -buildmode=c-shared -o ../SNISPF-HJ-Android/app/src/main/jniLibs/x86_64/libsnispf.so .
+          export GOARM=
+          go build -o ../SNISPF-HJ-Android/app/src/main/jniLibs/x86_64/libsnispf.so .
 
       - name: Verify all libraries
         run: |
