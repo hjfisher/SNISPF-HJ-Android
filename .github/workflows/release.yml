@@ -18,6 +18,9 @@ jobs:
   build:
     name: Build APK
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,13 +49,12 @@ jobs:
 
       - name: Generate Gradle Wrapper
         run: |
-          cd SNISPF-HJ-Android
           gradle wrapper --gradle-version 8.2.2 --distribution-type all
           chmod +x gradlew
 
       - name: Build all architecture libraries from source
         run: |
-          cd SNISPF-HJ-GO
+          cd ../SNISPF-HJ-GO
           
           # arm64-v8a
           export NDK_ROOT=$ANDROID_NDK_ROOT
@@ -88,31 +90,29 @@ jobs:
 
       - name: Verify all libraries
         run: |
-          ls -la SNISPF-HJ-Android/app/src/main/jniLibs/*/libsnispf.so
-          file SNISPF-HJ-Android/app/src/main/jniLibs/*/libsnispf.so
+          ls -la app/src/main/jniLibs/*/libsnispf.so
+          file app/src/main/jniLibs/*/libsnispf.so
 
       - name: Build Release APKs (all architectures)
         run: |
-          cd SNISPF-HJ-Android
           ./gradlew assembleRelease
 
       - name: Build Release AAB (for Play Store)
         run: |
-          cd SNISPF-HJ-Android
           ./gradlew bundleRelease
 
       - name: List build outputs
         run: |
-          find SNISPF-HJ-Android -name "*.apk" -o -name "*.aab" | head -20
-          ls -la SNISPF-HJ-Android/app/build/outputs/apk/release/
-          ls -la SNISPF-HJ-Android/app/build/outputs/bundle/release/
+          find . -name "*.apk" -o -name "*.aab" | head -20
+          ls -la app/build/outputs/apk/release/
+          ls -la app/build/outputs/bundle/release/
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: release-apks
           path: |
-            SNISPF-HJ-Android/app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/release/*.apk
           retention-days: 30
 
       - name: Upload AAB artifact
@@ -120,7 +120,7 @@ jobs:
         with:
           name: release-aab
           path: |
-            SNISPF-HJ-Android/app/build/outputs/bundle/release/*.aab
+            app/build/outputs/bundle/release/*.aab
           retention-days: 30
 
   release:
