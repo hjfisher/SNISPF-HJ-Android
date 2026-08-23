@@ -49,6 +49,8 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.4'
 
       - name: Clone Go project
         run: git clone https://github.com/hjfisher/SNISPF-HJ-GO.git ../SNISPF-HJ-GO
