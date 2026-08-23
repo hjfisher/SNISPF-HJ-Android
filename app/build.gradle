@@ -23,25 +23,6 @@ android {
         }
     }
 
-    // Version code per ABI for Play Store
-    applicationVariants.all { variant ->
-        def abiVersionMap = [
-                'armeabi-v7a': 1,
-                'x86_64': 2,
-                'arm64-v8a': 3
-        ]
-        def abi = variant.outputs[0].getFilter(com.android.build.OutputFile.ABI)
-        if (abi != null) {
-            variant.outputs.each { output ->
-                def abiFilter = output.getFilter(com.android.build.OutputFile.ABI)
-                if (abiFilter != null) {
-                    output.versionCodeOverride = abiVersionMap[abiFilter] * 1000000 + android.defaultConfig.versionCode
-                    output.outputFileName = "snispf-hj-${variant.versionName}-${abiFilter}.apk"
-                }
-            }
-        }
-    }
-
     buildTypes {
         release {
             minifyEnabled false
