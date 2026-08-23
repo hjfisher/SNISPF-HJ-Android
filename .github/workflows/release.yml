@@ -1,0 +1,130 @@
+name: Android Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 34
+          ndk-version: r26d
+          build-tools-version: 34.0.0
+          cmake-version: 3.22.1
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Build x86 (32-bit) shared library
+        run: |
+          cd ..
+          # Set up NDK toolchain for x86
+          export NDK_ROOT=$ANDROID_NDK_ROOT
+          export TOOLCHAIN=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64
+          export CC=$TOOLCHAIN/bin/i686-linux-android26-clang
+          export CXX=$TOOLCHAIN/bin/i686-linux-android26-clang++
+          export GOOS=android
+          export GOARCH=386
+          export CGO_ENABLED=1
+          export CGO_CFLAGS="-O2 -fPIC"
+          export CGO_LDFLAGS="-shared"
+          cd SNISPF-HJ-GO
+          $CC --version
+          go build -buildmode=c-shared -o ../SNISPF-HJ-Android/app/src/main/jniLibs/x86/libsnispf.so .
+        working-directory: ${{ github.workspace }}
+
+      - name: Verify x86 library
+        run: |
+          ls -la app/src/main/jniLibs/x86/
+          file app/src/main/jniLibs/x86/libsnispf.so
+
+      - name: Build Release APKs (all architectures)
+        run: ./gradlew assembleRelease
+
+      - name: Build Release AAB (for Play Store)
+        run: ./gradlew bundleRelease
+
+      - name: List build outputs
+        run: |
+          find . -name "*.apk" -o -name "*.aab" | head -20
+          ls -la app/build/outputs/apk/release/
+          ls -la app/build/outputs/bundle/release/
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apks
+          path: |
+            app/build/outputs/apk/release/*.apk
+          retention-days: 30
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-aab
+          path: |
+            app/build/outputs/bundle/release/*.aab
+          retention-days: 30
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download APK artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-apks
+          path: artifacts/apks
+
+      - name: Download AAB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-aab
+          path: artifacts/aab
+
+      - name: List artifacts
+        run: |
+          ls -la artifacts/apks/
+          ls -la artifacts/aab/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            artifacts/apks/*.apk
+            artifacts/aab/*.aab
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
