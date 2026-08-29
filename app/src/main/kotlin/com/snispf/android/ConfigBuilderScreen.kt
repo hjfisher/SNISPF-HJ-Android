@@ -30,9 +30,9 @@ data class BuilderState(
     val connectIps: List<String> = listOf("172.66.41.252", "108.162.196.145"),
     val fakeSnis: List<String> = listOf("github.com", "google.com"),
     // Pool settings
-    val activeSlots: Int = 10,
-    val healthInterval: Int = 30,
-    val healthTimeout: Int = 30,
+    val activeSlots: Int = 1,
+    val healthInterval: Int = 3,
+    val healthTimeout: Int = 1,
     val probeCount: Int = 5,
     val lossThreshold: Float = 0.20f,
     val deadThreshold: Float = 0.80f,
@@ -69,6 +69,7 @@ data class BuilderState(
     val mitmCertCn: String = "SNISPF-HJ",
     val mitmAlpn: String = "h2, http/1.1",
     val mitmUseClientSni: Boolean = true,
+    val mitmRawInjection: Boolean = false,
     val fingerprint: String = "unsafe",
     // IP Discovery
     val dynamicDiscovery: Boolean = false,
@@ -124,6 +125,7 @@ fun BuilderState.toJson(): String {
         .forEach { alpnArr.put(it) }
     obj.put("MITM_ALPN", alpnArr)
     obj.put("MITM_USE_CLIENT_SNI", mitmUseClientSni)
+    obj.put("MITM_RAW_INJECTION", mitmRawInjection)
     if (fingerprint.isNotBlank()) obj.put("FINGERPRINT", fingerprint.trim()) else obj.put("FINGERPRINT", null as String?)
 
     obj.put("ACTIVE_SLOTS",          activeSlots)
@@ -188,9 +190,9 @@ fun builderFromJson(json: String): BuilderState {
         BuilderState(
             connectIps       = if (ips.isEmpty()) listOf("172.66.41.252") else ips,
             fakeSnis         = if (snis.isEmpty()) listOf("github.com") else snis,
-            activeSlots      = o.optInt("ACTIVE_SLOTS", 10),
-            healthInterval   = o.optInt("HEALTH_CHECK_INTERVAL", 30),
-            healthTimeout    = o.optInt("HEALTH_CHECK_TIMEOUT", 30),
+            activeSlots      = o.optInt("ACTIVE_SLOTS", 1),
+            healthInterval   = o.optInt("HEALTH_CHECK_INTERVAL", 3),
+            healthTimeout    = o.optInt("HEALTH_CHECK_TIMEOUT", 1),
             probeCount       = o.optInt("PROBE_COUNT", 5),
             lossThreshold    = o.optDouble("LOSS_THRESHOLD", 0.20).toFloat(),
             deadThreshold    = o.optDouble("DEAD_THRESHOLD", 0.80).toFloat(),
@@ -250,6 +252,7 @@ fun builderFromJson(json: String): BuilderState {
                     .joinToString(", ")
             },
             mitmUseClientSni = o.optBoolean("MITM_USE_CLIENT_SNI", true),
+            mitmRawInjection = o.optBoolean("MITM_RAW_INJECTION", false),
             fingerprint      = o.optString("FINGERPRINT", "unsafe"),
             listenHost       = o.optString("LISTEN_HOST", "0.0.0.0"),
             listenPort       = o.optInt("LISTEN_PORT", 40443),
@@ -363,6 +366,12 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                             sublabel = "Forward the client's real SNI upstream instead of the decoy (recommended for VLESS/WS workers)",
                             checked  = bs.mitmUseClientSni,
                             onChange = { bs = bs.copy(mitmUseClientSni = it); saved = false }
+                        )
+                        BToggleRow(
+                            label    = "MITM Raw Injection",
+                            sublabel = "Raw fake-SNI seq_id trick on the MITM upstream dial. Requires root (Linux) — silently disabled otherwise",
+                            checked  = bs.mitmRawInjection,
+                            onChange = { bs = bs.copy(mitmRawInjection = it); saved = false }
                         )
                         BDropdown(
                             label   = "TLS Fingerprint",
