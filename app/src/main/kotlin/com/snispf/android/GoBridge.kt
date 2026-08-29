@@ -117,9 +117,12 @@ class GoBridge(private val context: Context) {
                 // for the fake_sni/combined methods.
                 val binPath = binaryFile.absolutePath
                 val cfgPath = configFile.absolutePath
-                val cmdLine = "exec \"$binPath\" --config \"$cfgPath\" 2>&1"
+                val homePath = homeDir.absolutePath
+                // --home guarantees a writable cert-cache dir even though su
+                // sanitizes $HOME to root's (often read-only) location.
+                val cmdLine = "exec \"$binPath\" --config \"$cfgPath\" --home \"$homePath\" 2>&1"
                 pb = ProcessBuilder("su", "-c", cmdLine).apply {
-                    environment()["HOME"] = homeDir.absolutePath
+                    environment()["HOME"] = homePath
                     redirectErrorStream(true)
                 }
             } else {
@@ -127,7 +130,8 @@ class GoBridge(private val context: Context) {
                 // explicitly off so it never attempts and logs a failure loop.
                 val cmd = arrayOf(
                     binaryFile.absolutePath, "--config",
-                    configFile.absolutePath, "--no-raw"
+                    configFile.absolutePath, "--home",
+                    homeDir.absolutePath, "--no-raw"
                 )
                 pb = ProcessBuilder(*cmd).apply {
                     directory(binDir)
