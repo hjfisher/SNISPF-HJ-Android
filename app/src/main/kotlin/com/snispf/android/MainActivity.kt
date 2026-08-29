@@ -208,6 +208,44 @@ fun ProxyTab(state: UiState, vm: SnispfViewModel) {
             Spacer(Modifier.width(8.dp))
             Text(if (isRunning) "Stop" else "Start", fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
+
+        // Root elevation
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = if (state.useRoot) MaterialTheme.colorScheme.secondaryContainer
+                                 else MaterialTheme.colorScheme.surfaceVariant
+            ),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    if (state.hasRoot) Icons.Default.Refresh else Icons.Default.Lock,
+                    null,
+                    tint = if (state.hasRoot) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Column(Modifier.weight(1f)) {
+                    Text("Root access", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        when {
+                            state.useRoot -> "Running as root"
+                            state.hasRoot -> "Available — tap to run elevated"
+                            else          -> "Not detected on this device"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (state.hasRoot) {
+                    Switch(checked = state.useRoot, onCheckedChange = { vm.setUseRoot(it) })
+                } else {
+                    OutlinedButton(onClick = { vm.refreshRoot() }) { Text("Check") }
+                }
+            }
+        }
     }
 }
 

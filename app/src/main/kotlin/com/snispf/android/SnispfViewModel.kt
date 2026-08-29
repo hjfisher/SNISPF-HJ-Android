@@ -51,10 +51,13 @@ data class UiState(
     val listenPort: Int = 40443,
     val errorMessage: String? = null,
     val pool: PoolStats = PoolStats(),
+    val hasRoot: Boolean = false,
+    val useRoot: Boolean = false,
 )
 
 private const val PREFS_NAME   = "snispf_prefs"
 private const val KEY_CONFIG   = "config_json"
+private const val KEY_USE_ROOT = "use_root"
 
 class SnispfViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -63,6 +66,7 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
     private val _uiState = MutableStateFlow(
         UiState(
             configJson = prefs.getString(KEY_CONFIG, DEFAULT_CONFIG) ?: DEFAULT_CONFIG,
+            useRoot = prefs.getBoolean(KEY_USE_ROOT, false),
         )
     )
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -79,6 +83,8 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 goBridge = GoBridge(application)
+                val root = goBridge?.checkRoot() ?: false
+                updateState { copy(hasRoot = root, useRoot = if (root) _uiState.value.useRoot else false) }
             } catch (e: Exception) {
                 updateState { copy(errorMessage = "Go bridge init failed: ${e.message}") }
             }
@@ -90,7 +96,7 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             val bridge = goBridge ?: return@launch
             updateState { copy(status = ProxyStatus.STARTING, logs = emptyList(), errorMessage = null, pool = PoolStats()) }
-            val result = bridge.start(state.configJson)
+            val result = bridge.start(state.configJson, state.useRoot)
             when (result) {
                 "ok", "already_running" -> {
                     SnispfService.start(getApplication())
@@ -106,6 +112,27 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
             goBridge?.stop()
             updateState { copy(status = ProxyStatus.STOPPING) }
             SnispfService.stop(getApplication())
+        }
+    }
+
+    fun setUseRoot(use: Boolean) {
+        if (use && !(_uiState.value.hasRoot)) {
+            updateState { copy(errorMessage = "Root not available on this device") }
+            return
+        }
+        prefs.edit().putBoolean(KEY_USE_ROOT, use).apply()
+        updateState { copy(useRoot = use, errorMessage = null) }
+    }
+
+    fun refreshRoot() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val root = goBridge?.checkRoot() ?: false
+            updateState {
+                copy(
+                    hasRoot = root,
+                    useRoot = if (root) _uiState.value.useRoot else false
+                )
+            }
         }
     }
 

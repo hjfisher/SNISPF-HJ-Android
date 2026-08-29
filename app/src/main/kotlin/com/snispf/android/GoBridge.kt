@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "GoBridge"
 
@@ -69,7 +70,17 @@ class GoBridge(private val context: Context) {
         context.filesDir.also { it.mkdirs() }
     }
 
-    fun start(configJson: String): String {
+    /** Check whether the device has root access (su binary + working su). */
+    fun checkRoot(): Boolean {
+        return try {
+            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
+            val output = BufferedReader(InputStreamReader(p.inputStream)).readText()
+            val exit = p.waitFor(3, TimeUnit.SECONDS)
+            exit && output.contains("uid=0")
+        } catch (_: Exception) { false }
+    }
+
+    fun start(configJson: String, useRoot: Boolean = false): String {
         if (process != null) return "already_running"
 
         return try {
@@ -87,24 +98,31 @@ class GoBridge(private val context: Context) {
             Log.d(TAG, "  exists=${binaryFile.exists()} canExec=${binaryFile.canExecute()} length=${binaryFile.length()}")
             Log.d(TAG, "Config: ${configFile.absolutePath}")
             Log.d(TAG, "HOME: ${homeDir.absolutePath}")
-            Log.d(TAG, "WorkDir: ${binDir.absolutePath}")
+            Log.d(TAG, "Root: $useRoot")
             Log.d(TAG, "===================")
 
-            val cmd = arrayOf(
-                binaryFile.absolutePath,
-                "--config", configFile.absolutePath,
-                "--no-raw"
-            )
-
-            Log.d(TAG, "Executing: ${cmd.joinToString(" ")}")
-
-            val pb = ProcessBuilder(*cmd)
-                .directory(binDir)
-                .apply {
+            val pb: ProcessBuilder
+            if (useRoot) {
+                // Write a shell wrapper that su will execute.
+                // Su drops into a shell, so pass everything as a single command string.
+                val binPath = binaryFile.absolutePath
+                val cfgPath = configFile.absolutePath
+                val cmdLine = "\"$binPath\" --config \"$cfgPath\" --no-raw 2>&1"
+                pb = ProcessBuilder("su", "-c", cmdLine).apply {
+                    environment()["HOME"] = homeDir.absolutePath
+                    redirectErrorStream(true)
+                }
+            } else {
+                val cmd = arrayOf(binaryFile.absolutePath, "--config", configFile.absolutePath, "--no-raw")
+                pb = ProcessBuilder(*cmd).apply {
+                    directory(binDir)
                     environment()["HOME"] = homeDir.absolutePath
                     environment()["USERPROFILE"] = homeDir.absolutePath
+                    redirectErrorStream(true)
                 }
-                .redirectErrorStream(true)
+            }
+
+            Log.d(TAG, "Executing: ${if (useRoot) "su -c ..." else pb.command().joinToString(" ")}")
 
             process = pb.start()
             startedAtMillis = System.currentTimeMillis()
@@ -121,14 +139,59 @@ class GoBridge(private val context: Context) {
     }
 
     fun stop() {
-        process?.let {
-            try {
-                it.destroy()
-            } catch (_: Exception) {}
-        }
+        val p = process
         process = null
         readJob?.cancel()
+        readJob = null
+
+        if (p != null) {
+            try {
+                // 1. SIGTERM (graceful)
+                p.destroy()
+                // 2. Wait briefly for clean exit
+                if (!p.waitFor(500, TimeUnit.MILLISECONDS)) {
+                    // 3. SIGKILL (forcible)
+                    p.destroyForcibly()
+                    p.waitFor(1, TimeUnit.SECONDS)
+                }
+            } catch (_: Exception) {}
+
+            // 4. Last resort: kill by PID via reflection on the process object
+            if (p.isAlive) {
+                try {
+                    val pid = processPid(p)
+                    if (pid > 0) {
+                        Log.w(TAG, "Process still alive after SIGKILL, killing PID $pid")
+                        android.os.Process.killProcess(pid)
+                        // Give it a moment, then force-kill again if needed
+                        p.waitFor(500, TimeUnit.MILLISECONDS)
+                        if (p.isAlive) p.destroyForcibly()
+                    } else {
+                        p.destroyForcibly()
+                    }
+                } catch (_: Exception) {
+                    try { p.destroyForcibly() } catch (_: Exception) {}
+                }
+            }
+        }
+
         _status.value = "stopped"
+    }
+
+    /** Best-effort retrieval of the underlying native PID of a Java Process. */
+    private fun processPid(p: Process): Int {
+        return try {
+            val f = p.javaClass.getDeclaredField("pid")
+            f.isAccessible = true
+            f.getInt(p)
+        } catch (_: Exception) {
+            try {
+                // Some ART versions expose the PID as a Method instead
+                val m = p.javaClass.getDeclaredMethod("pid")
+                m.isAccessible = true
+                m.invoke(p) as? Int ?: -1
+            } catch (_: Exception) { -1 }
+        }
     }
 
     fun clearLogs() {
@@ -278,8 +341,6 @@ class GoBridge(private val context: Context) {
                     else "skipped — IP-only pool for this method"
             line.contains("Dynamic SNI discovery: disabled") ->
                 statsMap["sni_discovery_reason"] = "off in config (DYNAMIC_SNI_DISCOVERY=false)"
-            // "[peer] MITM relay: ..." — one per client connection
-            line.contains("MITM relay:") -> totalConnCount += 1
             // Quarantine tracking (best effort)
             line.contains("Evicted IP") && line.contains("quarantine") ->
                 statsMap["quarantine_ips"] = ((statsMap["quarantine_ips"]?.toIntOrNull() ?: 0) + 1).toString()
