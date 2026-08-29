@@ -103,17 +103,23 @@ class GoBridge(private val context: Context) {
 
             val pb: ProcessBuilder
             if (useRoot) {
-                // Write a shell wrapper that su will execute.
                 // Su drops into a shell, so pass everything as a single command string.
+                // Under root we omit --no-raw so AF_PACKET raw injection can engage
+                // for the fake_sni/combined methods.
                 val binPath = binaryFile.absolutePath
                 val cfgPath = configFile.absolutePath
-                val cmdLine = "\"$binPath\" --config \"$cfgPath\" --no-raw 2>&1"
+                val cmdLine = "\"$binPath\" --config \"$cfgPath\" 2>&1"
                 pb = ProcessBuilder("su", "-c", cmdLine).apply {
                     environment()["HOME"] = homeDir.absolutePath
                     redirectErrorStream(true)
                 }
             } else {
-                val cmd = arrayOf(binaryFile.absolutePath, "--config", configFile.absolutePath, "--no-raw")
+                // Without root, AF_PACKET is unavailable (EPERM); keep raw injection
+                // explicitly off so it never attempts and logs a failure loop.
+                val cmd = arrayOf(
+                    binaryFile.absolutePath, "--config",
+                    configFile.absolutePath, "--no-raw"
+                )
                 pb = ProcessBuilder(*cmd).apply {
                     directory(binDir)
                     environment()["HOME"] = homeDir.absolutePath

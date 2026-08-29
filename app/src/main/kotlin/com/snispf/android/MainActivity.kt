@@ -231,8 +231,8 @@ fun ProxyTab(state: UiState, vm: SnispfViewModel) {
                     Text("Root access", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
                     Text(
                         when {
-                            state.useRoot -> "Running as root"
-                            state.hasRoot -> "Available — tap to run elevated"
+                            state.useRoot -> "Running as root — raw injection enabled"
+                            state.hasRoot -> "Available — tap to run elevated (raw injection)"
                             else          -> "Not detected on this device"
                         },
                         style = MaterialTheme.typography.bodySmall,
