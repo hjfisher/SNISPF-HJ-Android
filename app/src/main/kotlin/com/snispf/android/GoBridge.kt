@@ -61,6 +61,7 @@ class GoBridge(private val context: Context) {
     private var startedAtMillis: Long = 0
     private var activeConnAccum = 0
     private var totalConnCount = 0
+    private var lastUseRoot = false
 
     private val binDir: File by lazy {
         context.getDir("bin", Context.MODE_PRIVATE).also { it.mkdirs() }
@@ -101,14 +102,22 @@ class GoBridge(private val context: Context) {
             Log.d(TAG, "Root: $useRoot")
             Log.d(TAG, "===================")
 
+            lastUseRoot = useRoot
+            // Reap any backend left over from a previous session (crash, force-stop,
+            // or sticky service) so it cannot keep the listen port bound and make
+            // this fresh start fail.
+            reapBackend()
+
             val pb: ProcessBuilder
             if (useRoot) {
-                // Su drops into a shell, so pass everything as a single command string.
+                // Su drops into a shell. Use `exec` so the su process is REPLACED by
+                // our binary — the Process we hold then refers to the real backend,
+                // so destroying it later actually kills the backend (no orphaned child).
                 // Under root we omit --no-raw so AF_PACKET raw injection can engage
                 // for the fake_sni/combined methods.
                 val binPath = binaryFile.absolutePath
                 val cfgPath = configFile.absolutePath
-                val cmdLine = "\"$binPath\" --config \"$cfgPath\" 2>&1"
+                val cmdLine = "exec \"$binPath\" --config \"$cfgPath\" 2>&1"
                 pb = ProcessBuilder("su", "-c", cmdLine).apply {
                     environment()["HOME"] = homeDir.absolutePath
                     redirectErrorStream(true)
@@ -131,6 +140,7 @@ class GoBridge(private val context: Context) {
             Log.d(TAG, "Executing: ${if (useRoot) "su -c ..." else pb.command().joinToString(" ")}")
 
             process = pb.start()
+            lastUseRoot = useRoot
             startedAtMillis = System.currentTimeMillis()
             activeConnAccum = 0
             totalConnCount = 0
@@ -169,7 +179,6 @@ class GoBridge(private val context: Context) {
                     if (pid > 0) {
                         Log.w(TAG, "Process still alive after SIGKILL, killing PID $pid")
                         android.os.Process.killProcess(pid)
-                        // Give it a moment, then force-kill again if needed
                         p.waitFor(500, TimeUnit.MILLISECONDS)
                         if (p.isAlive) p.destroyForcibly()
                     } else {
@@ -181,7 +190,52 @@ class GoBridge(private val context: Context) {
             }
         }
 
+        // 5. Reap any lingering backend so the listen port is freed. This is the
+        //    critical step for root mode: su may fork the binary, orphaning it so
+        //    the Process above only killed `su`, while the backend keeps the port
+        //    open and bricks the next start.
+        reapBackend()
+
         _status.value = "stopped"
+    }
+
+    /**
+     * Aggressively terminate every lingering instance of our bundled backend.
+     * Works two ways:
+     *   - root: run `su -c pkill -9 -f <binPath>` (kills any uid, incl. orphans).
+     *   - non-root: walk /proc and kill same-UID processes whose exe is the binary
+     *     (available when the app UID is unchanged; AF_PACKET case).
+     */
+    private fun reapBackend() {
+        val binPath = try { getBinary().absolutePath } catch (_: Exception) { "" }
+        val binName = binPath.substringAfterLast('/')
+
+        if (lastUseRoot) {
+            try {
+                val script = "pkill -9 -f '$binPath' 2>/dev/null; pkill -9 -f '$binName' 2>/dev/null; true"
+                val pk = ProcessBuilder("su", "-c", script).start()
+                pk.waitFor(2, TimeUnit.SECONDS)
+                Log.d(TAG, "Root pkill issued for '$binName'")
+            } catch (_: Exception) {}
+        }
+
+        // /proc walk — belt and suspenders; also covers the non-root socket JIT case.
+        try {
+            val procs = File("/proc").listFiles() ?: return
+            for (dir in procs) {
+                val pid = dir.name.toIntOrNull() ?: continue
+                if (pid <= 0 || pid == android.os.Process.myPid()) continue
+                val exe = File(dir, "exe")
+                val resolved = try { exe.canonicalPath } catch (_: Exception) { "" }
+                val cmdline = try { File(dir, "cmdline").readText().trimEnd('\u0000') } catch (_: Exception) { "" }
+                if (resolved == binPath || cmdline.contains(binName)) {
+                    try {
+                        android.os.Process.killProcess(pid)
+                        Log.w(TAG, "Reaped lingering backend pid=$pid")
+                    } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     /** Best-effort retrieval of the underlying native PID of a Java Process. */
