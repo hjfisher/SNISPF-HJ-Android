@@ -89,7 +89,7 @@ class GoBridge(private val context: Context) {
             logBuffer.clear()
             statsMap.clear()
 
-            val configFile = writeConfig(configJson)
+            val configFile = writeConfig(configJson, useRoot)
             val binaryFile = getBinary()
 
             Log.d(TAG, "=== Diagnostics ===")
@@ -263,8 +263,21 @@ class GoBridge(private val context: Context) {
         _logs.value = emptyList()
     }
 
-    private fun writeConfig(configJson: String): File {
+    private fun writeConfig(configJson: String, useRoot: Boolean): File {
         val configFile = File(binDir, "config.json")
+        if (useRoot) {
+            // Running as root: force BYPASS_VPN so outbound sockets are bound to
+            // the physical interface and bypass any upstream VPN (e.g. v2rayNG)
+            // that would otherwise capture/loop the backend's own connections.
+            try {
+                val obj = org.json.JSONObject(configJson)
+                obj.put("BYPASS_VPN", true)
+                configFile.writeText(obj.toString())
+                return configFile
+            } catch (_: Exception) {
+                // fall through and write the raw config unchanged
+            }
+        }
         configFile.writeText(configJson)
         return configFile
     }
