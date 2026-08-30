@@ -265,10 +265,10 @@ class GoBridge(private val context: Context) {
 
     private fun writeConfig(configJson: String, useRoot: Boolean): File {
         val configFile = File(binDir, "config.json")
-        if (useRoot) {
-            // Running as root: force BYPASS_VPN so outbound sockets are bound to
-            // the physical interface and bypass any upstream VPN (e.g. v2rayNG)
-            // that would otherwise capture/loop the backend's own connections.
+        // The config builder already emits BYPASS_VPN (whose default is true,
+        // matching the root-mode recommendation). Ensure it stays on when
+        // running as root in case a stored/hand-written config omitted the key.
+        if (useRoot && !configJson.contains("\"BYPASS_VPN\"")) {
             try {
                 val obj = org.json.JSONObject(configJson)
                 obj.put("BYPASS_VPN", true)

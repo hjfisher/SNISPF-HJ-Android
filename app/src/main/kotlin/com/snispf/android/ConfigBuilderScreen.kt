@@ -92,6 +92,8 @@ data class BuilderState(
     val listenHost: String = "0.0.0.0",
     val listenPort: Int = 40443,
     val connectPort: Int = 443,
+    // Root / VPN bypass
+    val bypassVpn: Boolean = true,
 )
 
 fun BuilderState.toJson(): String {
@@ -99,6 +101,7 @@ fun BuilderState.toJson(): String {
     obj.put("LISTEN_HOST",  listenHost)
     obj.put("LISTEN_PORT",  listenPort)
     obj.put("CONNECT_PORT", connectPort)
+    obj.put("BYPASS_VPN", bypassVpn)
     obj.put("BYPASS_METHOD",     bypassMethod)
     obj.put("FRAGMENT_STRATEGY", fragmentStrategy)
     obj.put("FRAGMENT_DELAY",    String.format("%.2f", fragmentDelay).toDouble())
@@ -257,6 +260,7 @@ fun builderFromJson(json: String): BuilderState {
             listenHost       = o.optString("LISTEN_HOST", "0.0.0.0"),
             listenPort       = o.optInt("LISTEN_PORT", 40443),
             connectPort      = o.optInt("CONNECT_PORT", 443),
+            bypassVpn        = o.optBoolean("BYPASS_VPN", true),
         )
     } catch (_: Exception) { BuilderState() }
 }
@@ -312,6 +316,13 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                     BNumberRow("Connect Port", bs.connectPort, 1, 65535) {
                         bs = bs.copy(connectPort = it); saved = false
                     }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    BToggleRow(
+                        label    = "Bypass VPN (root)",
+                        sublabel = "Bind outbound sockets to the physical interface so an upstream VPN (e.g. v2rayNG) can't loop the backend's own connections. Requires root",
+                        checked  = bs.bypassVpn,
+                        onChange = { bs = bs.copy(bypassVpn = it); saved = false }
+                    )
                 }
             }
 
