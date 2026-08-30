@@ -93,10 +93,16 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
 
     fun start() {
         val state = _uiState.value
+        val restricted = rootRestrictionError(state.configJson)
+        if (restricted != null) {
+            updateState { copy(status = ProxyStatus.ERROR, errorMessage = restricted) }
+            return
+        }
+        val enforced = enforceBypassVpn(state.configJson)
         viewModelScope.launch(Dispatchers.IO) {
             val bridge = goBridge ?: return@launch
             updateState { copy(status = ProxyStatus.STARTING, logs = emptyList(), errorMessage = null, pool = PoolStats()) }
-            val result = bridge.start(state.configJson, state.useRoot)
+            val result = bridge.start(enforced, state.useRoot)
             when (result) {
                 "ok", "already_running" -> {
                     SnispfService.start(getApplication())
@@ -136,9 +142,48 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun saveConfig(json: String) {
-        val cleaned = try {
+    // Returns an error string if the config selects a raw-injection mode that is
+    // not permitted without root; null when the mode is allowed.
+    private fun rootRestrictionError(json: String): String? {
+        val method: String
+        val raw: Boolean
+        try {
             val o = JSONObject(json)
+            method = o.optString("BYPASS_METHOD", "direct")
+            raw = o.optBoolean("MITM_RAW_INJECTION", false)
+        } catch (_: Exception) { return null }
+        val restricted = method == "fake_sni" || method == "combined" || (method == "mitm" && raw)
+        if (!restricted) return null
+        if (_uiState.value.hasRoot) return null
+        return "fake_sni, combined and mitm+raw-injection require root (raw packet injection). " +
+            "Root is not available on this device."
+    }
+
+    // When running as root with a raw-injection mode, BYPASS_VPN is mandatory so
+    // an upstream VPN (e.g. v2rayNG) can't loop the backend. Rewrites the JSON to
+    // force it on and returns the updated string.
+    private fun enforceBypassVpn(json: String): String {
+        return try {
+            val o = JSONObject(json)
+            val method = o.optString("BYPASS_METHOD", "direct")
+            val raw = o.optBoolean("MITM_RAW_INJECTION", false)
+            val restricted = method == "fake_sni" || method == "combined" || (method == "mitm" && raw)
+            if (restricted && _uiState.value.hasRoot) {
+                o.put("BYPASS_VPN", true)
+            }
+            o.toString(2)
+        } catch (_: Exception) { json }
+    }
+
+    fun saveConfig(json: String) {
+        val restricted = rootRestrictionError(json)
+        if (restricted != null) {
+            updateState { copy(errorMessage = restricted) }
+            return
+        }
+        val enforced = enforceBypassVpn(json)
+        val cleaned = try {
+            val o = JSONObject(enforced)
             val alpn = o.opt("MITM_ALPN")
             if (alpn is String) {
                 val arr = JSONArray()

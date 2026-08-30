@@ -268,9 +268,19 @@ fun builderFromJson(json: String): BuilderState {
 // ── Main screen ───────────────────────────────────────────────────────────────
 @Composable
 fun ConfigBuilderTab(vm: SnispfViewModel) {
-    val currentJson = vm.uiState.collectAsState().value.configJson
+    val state = vm.uiState.collectAsState().value
+    val currentJson = state.configJson
+    val hasRoot = state.hasRoot
     var bs by remember { mutableStateOf(builderFromJson(currentJson)) }
     var saved by remember { mutableStateOf(false) }
+
+    // Modes that perform raw (AF_PACKET) injection require root. Non-root
+    // users must not be able to pick them.
+    fun rootRequired(method: String, rawInjection: Boolean): Boolean =
+        method == "fake_sni" || method == "combined" ||
+            (method == "mitm" && rawInjection)
+
+    val methodRequiresRoot = rootRequired(bs.bypassMethod, bs.mitmRawInjection)
 
     Column(Modifier.fillMaxSize()) {
         // Save button bar
@@ -319,8 +329,12 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     BToggleRow(
                         label    = "Bypass VPN (root)",
-                        sublabel = "Bind outbound sockets to the physical interface so an upstream VPN (e.g. v2rayNG) can't loop the backend's own connections. Requires root",
+                        sublabel = if (methodRequiresRoot)
+                            "Auto-enabled — required for raw-injection modes. Binds outbound sockets to the physical interface so an upstream VPN (e.g. v2rayNG) can't loop the backend"
+                        else
+                            "Bind outbound sockets to the physical interface so an upstream VPN (e.g. v2rayNG) can't loop the backend's own connections. Requires root",
                         checked  = bs.bypassVpn,
+                        enabled  = if (methodRequiresRoot) false else hasRoot,
                         onChange = { bs = bs.copy(bypassVpn = it); saved = false }
                     )
                 }
@@ -335,12 +349,34 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                         options = listOf(
                             "direct"    to "Direct — no SNI spoofing, real ClientHello as-is",
                             "fragment"  to "Fragment — TLS fragmentation",
-                            "fake_sni"  to "Fake SNI — SNI substitution",
-                            "combined"  to "Combined — Fragment + Fake SNI",
+                            "fake_sni"  to "Fake SNI — SNI substitution (root required)",
+                            "combined"  to "Combined — Fragment + Fake SNI (root required)",
                             "mitm"      to "MITM — TLS-terminating relay (tls-decrypt/tls-repack)",
                         ),
-                        onChange = { bs = bs.copy(bypassMethod = it); saved = false }
+                        disabledKeys = if (hasRoot) emptySet() else setOf("fake_sni", "combined"),
+                        onChange = { m ->
+                            if (!hasRoot && rootRequired(m, bs.mitmRawInjection)) {
+                                saved = false
+                                return@BDropdown
+                            }
+                            var newBs = bs.copy(bypassMethod = m); saved = false
+                            // Root users picking a raw-injection mode get VPN
+                            // bypass auto-enabled (they cannot turn it off).
+                            if (rootRequired(m, newBs.mitmRawInjection)) {
+                                newBs = newBs.copy(bypassVpn = true)
+                            }
+                            bs = newBs
+                        }
                     )
+                    if (!hasRoot) {
+                        Text(
+                            "fake_sni, combined, and mitm+raw-injection require root (raw AF_PACKET injection). " +
+                            "They are unavailable without root.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            lineHeight = 16.sp,
+                        )
+                    }
                 }
             }
 
@@ -380,9 +416,17 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                         )
                         BToggleRow(
                             label    = "MITM Raw Injection",
-                            sublabel = "Raw fake-SNI seq_id trick on the MITM upstream dial. Requires root (Linux) — silently disabled otherwise",
+                            sublabel = "Raw fake-SNI seq_id trick on the MITM upstream dial. Requires root — unavailable without root",
                             checked  = bs.mitmRawInjection,
-                            onChange = { bs = bs.copy(mitmRawInjection = it); saved = false }
+                            enabled  = hasRoot,
+                            onChange = { on ->
+                                if (!hasRoot && on) { saved = false; return@BToggleRow }
+                                var newBs = bs.copy(mitmRawInjection = on); saved = false
+                                if (on && newBs.bypassMethod == "mitm") {
+                                    newBs = newBs.copy(bypassVpn = true)
+                                }
+                                bs = newBs
+                            }
                         )
                         BDropdown(
                             label   = "TLS Fingerprint",
@@ -672,14 +716,14 @@ fun BSection(title: String, icon: ImageVector, content: @Composable ColumnScope.
 }
 
 @Composable
-fun BToggleRow(label: String, sublabel: String = "", checked: Boolean, onChange: (Boolean) -> Unit) {
+fun BToggleRow(label: String, sublabel: String = "", checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(label, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
             if (sublabel.isNotBlank())
                 Text(sublabel, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
     }
 }
 
@@ -763,7 +807,7 @@ fun BSliderRow(label: String, value: Int, min: Int, max: Int, display: String, o
 }
 
 @Composable
-fun BDropdown(label: String, value: String, options: List<Pair<String, String>>, onChange: (String) -> Unit) {
+fun BDropdown(label: String, value: String, options: List<Pair<String, String>>, disabledKeys: Set<String> = emptySet(), onChange: (String) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     val current = options.firstOrNull { it.first == value }?.second ?: value
 
@@ -781,9 +825,11 @@ fun BDropdown(label: String, value: String, options: List<Pair<String, String>>,
             }
             DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                 options.forEach { (key, desc) ->
+                    val disabled = key in disabledKeys
                     DropdownMenuItem(
                         text    = { Text(desc, style = MaterialTheme.typography.bodySmall) },
                         onClick = { onChange(key); expanded = false },
+                        enabled = !disabled,
                         leadingIcon = if (key == value) ({ Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary) }) else null
                     )
                 }
