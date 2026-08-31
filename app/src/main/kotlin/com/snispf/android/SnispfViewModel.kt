@@ -159,16 +159,18 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
             "Root is not available on this device."
     }
 
-    // When running as root with a raw-injection mode, BYPASS_VPN is mandatory so
-    // an upstream VPN (e.g. v2rayNG) can't loop the backend. Rewrites the JSON to
-    // force it on and returns the updated string.
+    // When running as root with a bypass mode (fragment/fake_sni/combined or
+    // mitm+raw), BYPASS_VPN is mandatory so an upstream VPN (e.g. v2rayNG)
+    // can't loop the backend. Rewrites the JSON to force it on and returns the
+    // updated string. The backend independently auto-enables it under root.
     private fun enforceBypassVpn(json: String): String {
         return try {
             val o = JSONObject(json)
             val method = o.optString("BYPASS_METHOD", "direct")
             val raw = o.optBoolean("MITM_RAW_INJECTION", false)
-            val restricted = method == "fake_sni" || method == "combined" || (method == "mitm" && raw)
-            if (restricted && _uiState.value.hasRoot) {
+            val needsBypass = method == "fragment" || method == "fake_sni" ||
+                method == "combined" || (method == "mitm" && raw)
+            if (needsBypass && _uiState.value.hasRoot) {
                 o.put("BYPASS_VPN", true)
             }
             o.toString(2)

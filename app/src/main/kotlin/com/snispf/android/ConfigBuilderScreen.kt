@@ -282,6 +282,10 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
 
     val methodRequiresRoot = rootRequired(bs.bypassMethod, bs.mitmRawInjection)
 
+    // Under root, fragment/fake_sni/combined (and mitm+raw) automatically get
+    // VPN bypass — the toggle locks on.
+    val bypassAuto = methodRequiresRoot || (hasRoot && bs.bypassMethod == "fragment")
+
     Column(Modifier.fillMaxSize()) {
         // Save button bar
         Row(
@@ -329,12 +333,12 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                     BToggleRow(
                         label    = "Bypass VPN (root)",
-                        sublabel = if (methodRequiresRoot)
-                            "Auto-enabled — required for raw-injection modes. Binds outbound sockets to the physical interface so an upstream VPN (e.g. v2rayNG) can't loop the backend"
+                        sublabel = if (bypassAuto)
+                            "Auto-enabled — this mode's outbound connections bypass upstream VPNs (e.g. v2rayNG) when running as root"
                         else
                             "Bind outbound sockets to the physical interface so an upstream VPN (e.g. v2rayNG) can't loop the backend's own connections. Requires root",
-                        checked  = bs.bypassVpn,
-                        enabled  = if (methodRequiresRoot) false else hasRoot,
+                        checked  = if (bypassAuto) true else bs.bypassVpn,
+                        enabled  = if (bypassAuto) false else hasRoot,
                         onChange = { bs = bs.copy(bypassVpn = it); saved = false }
                     )
                 }
@@ -360,9 +364,10 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                                 return@BDropdown
                             }
                             var newBs = bs.copy(bypassMethod = m); saved = false
-                            // Root users picking a raw-injection mode get VPN
-                            // bypass auto-enabled (they cannot turn it off).
-                            if (rootRequired(m, newBs.mitmRawInjection)) {
+                            // Root users picking a bypass mode (fragment/
+                            // fake_sni/combined/mitm+raw) get VPN bypass
+                            // auto-enabled (they cannot turn it off).
+                            if (hasRoot && (m == "fragment" || rootRequired(m, newBs.mitmRawInjection))) {
                                 newBs = newBs.copy(bypassVpn = true)
                             }
                             bs = newBs
