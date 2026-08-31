@@ -92,6 +92,10 @@ data class BuilderState(
     val listenHost: String = "0.0.0.0",
     val listenPort: Int = 40443,
     val connectPort: Int = 443,
+    // Connection-lifetime bounds
+    val maxActiveConns: Int = 512,
+    val handshakeTimeout: Int = 20,
+    val idleTimeout: Int = 300,
     // Root / VPN bypass
     val bypassVpn: Boolean = true,
 )
@@ -101,6 +105,9 @@ fun BuilderState.toJson(): String {
     obj.put("LISTEN_HOST",  listenHost)
     obj.put("LISTEN_PORT",  listenPort)
     obj.put("CONNECT_PORT", connectPort)
+    obj.put("MAX_ACTIVE_CONNS",  maxActiveConns)
+    obj.put("HANDSHAKE_TIMEOUT", handshakeTimeout)
+    obj.put("IDLE_TIMEOUT",      idleTimeout)
     obj.put("BYPASS_VPN", bypassVpn)
     obj.put("BYPASS_METHOD",     bypassMethod)
     obj.put("FRAGMENT_STRATEGY", fragmentStrategy)
@@ -260,6 +267,9 @@ fun builderFromJson(json: String): BuilderState {
             listenHost       = o.optString("LISTEN_HOST", "0.0.0.0"),
             listenPort       = o.optInt("LISTEN_PORT", 40443),
             connectPort      = o.optInt("CONNECT_PORT", 443),
+            maxActiveConns   = o.optInt("MAX_ACTIVE_CONNS", 512),
+            handshakeTimeout = o.optInt("HANDSHAKE_TIMEOUT", 20),
+            idleTimeout      = o.optInt("IDLE_TIMEOUT", 300),
             bypassVpn        = o.optBoolean("BYPASS_VPN", true),
         )
     } catch (_: Exception) { BuilderState() }
@@ -341,6 +351,22 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                         enabled  = if (bypassAuto) false else hasRoot,
                         onChange = { bs = bs.copy(bypassVpn = it); saved = false }
                     )
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Text(
+                        "Connection-lifetime bounds — prevent stuck connections from piling up when the censor blackholes injected traffic (active-connection explosion).",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        lineHeight = 16.sp,
+                    )
+                    BNumberRow("Max Active Connections", bs.maxActiveConns, 16, 4096) {
+                        bs = bs.copy(maxActiveConns = it); saved = false
+                    }
+                    BNumberRow("Handshake Timeout (s)", bs.handshakeTimeout, 5, 120) {
+                        bs = bs.copy(handshakeTimeout = it); saved = false
+                    }
+                    BNumberRow("Idle Timeout (s)", bs.idleTimeout, 15, 3600) {
+                        bs = bs.copy(idleTimeout = it); saved = false
+                    }
                 }
             }
 
