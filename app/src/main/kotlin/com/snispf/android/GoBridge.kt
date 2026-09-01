@@ -260,7 +260,21 @@ class GoBridge(private val context: Context) {
 
     fun clearLogs() {
         logBuffer.clear()
+        lastLogEmit = 0L
         _logs.value = emptyList()
+    }
+
+    // Throttle log emissions: the backend can log hundreds of lines per
+    // second during connection storms, and copying the 500-line buffer into
+    // the StateFlow on EVERY line burns CPU/battery and floods Compose with
+    // recompositions. At most one copy per 300ms.
+    private var lastLogEmit = 0L
+    private fun emitLogsThrottled() {
+        val now = System.currentTimeMillis()
+        if (now - lastLogEmit >= 300) {
+            lastLogEmit = now
+            _logs.value = logBuffer.toList()
+        }
     }
 
     private fun writeConfig(configJson: String, useRoot: Boolean): File {
@@ -324,7 +338,7 @@ class GoBridge(private val context: Context) {
         Log.d(TAG, "GO> $line")
         logBuffer.add(line)
         if (logBuffer.size > 500) logBuffer.removeAt(0)
-        _logs.value = logBuffer.toList()
+        emitLogsThrottled()
 
         parseStats(line)
     }
@@ -332,7 +346,7 @@ class GoBridge(private val context: Context) {
     private fun addLog(line: String) {
         logBuffer.add(line)
         if (logBuffer.size > 500) logBuffer.removeAt(0)
-        _logs.value = logBuffer.toList()
+        emitLogsThrottled()
     }
 
     private fun parseStats(line: String) {

@@ -15,6 +15,11 @@ class SnispfService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_STOP -> {
+                // Stop the actual backend process first — the old code only
+                // stopped the foreground service and left the Go backend
+                // running as an orphan (orphan churn is a battery drain and
+                // keeps port 40443 bound so the next start fails).
+                GoBridgeSingleton.existing?.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }

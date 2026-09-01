@@ -80,9 +80,16 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
             updateState { copy(listenPort = port) }
         } catch (_: Exception) {}
 
+        // GoBridge holds the real backend process. It must NOT live inside the
+        // ViewModel — Android destroys/recreates ViewModels on configuration
+        // changes and memory pressure, and onCleared() then killed the running
+        // backend while the foreground service kept claiming it was running.
+        // Keep a process-wide singleton so the backend's lifecycle is owned by
+        // the process (stopped only via the explicit Stop button or the
+        // notification action), like a well-behaved proxy app.
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                goBridge = GoBridge(application)
+                goBridge = GoBridgeSingleton.get(application)
                 val root = goBridge?.checkRoot() ?: false
                 updateState { copy(hasRoot = root, useRoot = if (root) _uiState.value.useRoot else false) }
             } catch (e: Exception) {
@@ -260,9 +267,16 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
                         ipDiscoveryReason = goStats.ipDiscoveryReason,
                         sniDiscoveryReason = goStats.sniDiscoveryReason,
                     )
-                    updateState { copy(logs = bridge.logs.value, pool = pool) }
+                    val logs = bridge.logs.value
+                    // Only push state when something actually changed — a
+                    // 1s full-copy poll recomposes Compose constantly and
+                    // burns battery even when the backend is idle.
+                    val cur = _uiState.value
+                    if (cur.pool != pool || cur.logs != logs) {
+                        updateState { copy(logs = logs, pool = pool) }
+                    }
                 }
-                delay(1000)
+                delay(2000)
             }
         }
     }
@@ -273,9 +287,32 @@ class SnispfViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        // Deliberately do NOT stop the backend here: with the foreground
+        // service alive the proxy must keep running regardless of ViewModel
+        // teardown (config changes, memory pressure). Explicit stop paths:
+        // Stop button (vm.stop()) and the notification's Stop action.
         pollJob?.cancel()
-        goBridge?.stop()
     }
+}
+
+/**
+ * Process-wide GoBridge holder. The backend process must outlive the
+ * ViewModel — Android recreates ViewModel instances on configuration changes
+ * and under memory pressure, and the old code killed the running backend in
+ * onCleared() while the foreground service still advertised it as running.
+ * This is also why the app appeared to "close" / drain battery: the backend
+ * was being torn down and restarted repeatedly instead of running steadily.
+ */
+object GoBridgeSingleton {
+    @Volatile
+    private var instance: GoBridge? = null
+
+    fun get(app: Application): GoBridge =
+        instance ?: synchronized(this) {
+            instance ?: GoBridge(app).also { instance = it }
+        }
+
+    val existing: GoBridge? get() = instance
 }
 
 const val DEFAULT_CONFIG = """{
