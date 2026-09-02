@@ -7,10 +7,45 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
 class SnispfService : Service() {
+
+    // Termux holds a CPU wake lock by default, which is why the backend
+    // behaves there: no Doze freeze/unfreeze cycles of the proxy process.
+    // Doze freezing a backend with live sockets is exactly what causes
+    // connection blackholes, retry storms (CPU spikes) and battery drain —
+    // and Android's phantom-process management then kills the backend.
+    // Hold the same locks while the proxy is running.
+    private var cpuWakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    private fun acquireLocks() {
+        if (cpuWakeLock == null) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            cpuWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "snispf:backend").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+        if (wifiLock == null) {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "snispf:wifi").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+    }
+
+    private fun releaseLocks() {
+        try { cpuWakeLock?.release() } catch (_: Exception) {}
+        cpuWakeLock = null
+        try { wifiLock?.release() } catch (_: Exception) {}
+        wifiLock = null
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -20,16 +55,23 @@ class SnispfService : Service() {
                 // running as an orphan (orphan churn is a battery drain and
                 // keeps port 40443 bound so the next start fails).
                 GoBridgeSingleton.existing?.stop()
+                releaseLocks()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
             else -> {
                 createNotificationChannel()
                 startForeground(NOTIFICATION_ID, buildNotification())
+                acquireLocks()
             }
         }
         // START_STICKY: if killed, restart without intent — keeps service alive
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        releaseLocks()
+        super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
