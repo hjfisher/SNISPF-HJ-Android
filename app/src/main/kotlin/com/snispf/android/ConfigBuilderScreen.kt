@@ -71,6 +71,8 @@ data class BuilderState(
     val mitmUseClientSni: Boolean = true,
     val mitmRawInjection: Boolean = false,
     val mitmECHGrease: Boolean = false,
+    val mitmECHConfigList: String = "",
+    val mitmECHForceQuery: String = "best-effort",
     val fingerprint: String = "unsafe",
     // IP Discovery
     val dynamicDiscovery: Boolean = false,
@@ -138,6 +140,8 @@ fun BuilderState.toJson(): String {
     obj.put("MITM_USE_CLIENT_SNI", mitmUseClientSni)
     obj.put("MITM_RAW_INJECTION", mitmRawInjection)
     obj.put("MITM_ECH_GREASE", mitmECHGrease)
+    if (mitmECHConfigList.isNotBlank()) obj.put("MITM_ECH_CONFIG_LIST", mitmECHConfigList.trim())
+    if (mitmECHConfigList.isNotBlank()) obj.put("MITM_ECH_FORCE_QUERY", mitmECHForceQuery)
     if (fingerprint.isNotBlank()) obj.put("FINGERPRINT", fingerprint.trim()) else obj.put("FINGERPRINT", null as String?)
 
     obj.put("ACTIVE_SLOTS",          activeSlots)
@@ -266,6 +270,8 @@ fun builderFromJson(json: String): BuilderState {
             mitmUseClientSni = o.optBoolean("MITM_USE_CLIENT_SNI", true),
             mitmRawInjection = o.optBoolean("MITM_RAW_INJECTION", false),
             mitmECHGrease = o.optBoolean("MITM_ECH_GREASE", false),
+            mitmECHConfigList = o.optString("MITM_ECH_CONFIG_LIST", ""),
+            mitmECHForceQuery = o.optString("MITM_ECH_FORCE_QUERY", "best-effort"),
             fingerprint      = o.optString("FINGERPRINT", "unsafe"),
             listenHost       = o.optString("LISTEN_HOST", "0.0.0.0"),
             listenPort       = o.optInt("LISTEN_PORT", 40443),
@@ -467,6 +473,31 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                             sublabel = "Adds a GREASE Encrypted Client Hello extension to the upstream hello — matches current Chrome and probes censor ECH handling. Does NOT encrypt the SNI (no real client ECH yet)",
                             checked  = bs.mitmECHGrease,
                             onChange = { bs = bs.copy(mitmECHGrease = it); saved = false }
+                        )
+                        BTextField(
+                            "ECH Config List (real ECH — overrides GREASE)",
+                            bs.mitmECHConfigList,
+                            "cloudflare.com+https://cloudflare-dns.com/dns-query",
+                            KeyboardType.Ascii
+                        ) {
+                            bs = bs.copy(mitmECHConfigList = it); saved = false
+                        }
+                        Text(
+                            "Real Encrypted Client Hello on the upstream hello: the real SNI travels HPKE-encrypted (inner hello) and the outer hello uses the config's public name. " +
+                            "Formats: base64 ECHConfigList, \"https://doh-server\", \"udp://dns\", or \"domain+https://doh-server\" (queries the DNS type-HTTPS/65 record). " +
+                            "Overrides the GREASE toggle while set.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            lineHeight = 16.sp,
+                        )
+                        BDropdown(
+                            label   = "ECH Force Query",
+                            value   = bs.mitmECHForceQuery,
+                            options = listOf(
+                                "best-effort" to "best-effort — fall back to plain TLS if the ECH config cannot be fetched",
+                                "full"        to "full — fail the connection if the ECH config cannot be fetched (SNI never leaks)",
+                            ),
+                            onChange = { bs = bs.copy(mitmECHForceQuery = it); saved = false }
                         )
                         BDropdown(
                             label   = "TLS Fingerprint",

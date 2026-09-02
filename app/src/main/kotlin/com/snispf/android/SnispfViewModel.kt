@@ -335,6 +335,8 @@ const val DEFAULT_CONFIG = """{
   "MITM_USE_CLIENT_SNI": true,
   "MITM_RAW_INJECTION": false,
   "MITM_ECH_GREASE": false,
+  "MITM_ECH_CONFIG_LIST": "",
+  "MITM_ECH_FORCE_QUERY": "best-effort",
   "FINGERPRINT": "unsafe",
   "ACTIVE_SLOTS": 1,
   "HEALTH_CHECK_INTERVAL": 3,
