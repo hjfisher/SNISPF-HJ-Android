@@ -500,31 +500,6 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                                 onChange = { bs = bs.copy(mitmECHForceQuery = it); saved = false }
                             )
                         }
-                        BTextField(
-                            "ECH Config List (real ECH — overrides GREASE)",
-                            bs.mitmECHConfigList,
-                            "cloudflare.com+https://cloudflare-dns.com/dns-query",
-                            KeyboardType.Ascii
-                        ) {
-                            bs = bs.copy(mitmECHConfigList = it); saved = false
-                        }
-                        Text(
-                            "Real Encrypted Client Hello on the upstream hello: the real SNI travels HPKE-encrypted (inner hello) and the outer hello uses the config's public name. " +
-                            "Formats: base64 ECHConfigList, \"https://doh-server\", \"udp://dns\", or \"domain+https://doh-server\" (queries the DNS type-HTTPS/65 record). " +
-                            "Overrides the GREASE toggle while set.",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            lineHeight = 16.sp,
-                        )
-                        BDropdown(
-                            label   = "ECH Force Query",
-                            value   = bs.mitmECHForceQuery,
-                            options = listOf(
-                                "best-effort" to "best-effort — fall back to plain TLS if the ECH config cannot be fetched",
-                                "full"        to "full — fail the connection if the ECH config cannot be fetched (SNI never leaks)",
-                            ),
-                            onChange = { bs = bs.copy(mitmECHForceQuery = it); saved = false }
-                        )
                         BDropdown(
                             label   = "TLS Fingerprint",
                             value   = bs.fingerprint,
