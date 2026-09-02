@@ -70,7 +70,6 @@ data class BuilderState(
     val mitmAlpn: String = "h2, http/1.1",
     val mitmUseClientSni: Boolean = true,
     val mitmRawInjection: Boolean = false,
-    val mitmECHGrease: Boolean = false,
     val mitmECHConfigList: String = "",
     val mitmECHForceQuery: String = "best-effort",
     val fingerprint: String = "unsafe",
@@ -139,7 +138,8 @@ fun BuilderState.toJson(): String {
     obj.put("MITM_ALPN", alpnArr)
     obj.put("MITM_USE_CLIENT_SNI", mitmUseClientSni)
     obj.put("MITM_RAW_INJECTION", mitmRawInjection)
-    obj.put("MITM_ECH_GREASE", mitmECHGrease)
+    if (mitmECHConfigList.isNotBlank()) obj.put("MITM_ECH_CONFIG_LIST", mitmECHConfigList.trim())
+    if (mitmECHConfigList.isNotBlank()) obj.put("MITM_ECH_FORCE_QUERY", mitmECHForceQuery)
     if (mitmECHConfigList.isNotBlank()) obj.put("MITM_ECH_CONFIG_LIST", mitmECHConfigList.trim())
     if (mitmECHConfigList.isNotBlank()) obj.put("MITM_ECH_FORCE_QUERY", mitmECHForceQuery)
     if (fingerprint.isNotBlank()) obj.put("FINGERPRINT", fingerprint.trim()) else obj.put("FINGERPRINT", null as String?)
@@ -269,7 +269,6 @@ fun builderFromJson(json: String): BuilderState {
             },
             mitmUseClientSni = o.optBoolean("MITM_USE_CLIENT_SNI", true),
             mitmRawInjection = o.optBoolean("MITM_RAW_INJECTION", false),
-            mitmECHGrease = o.optBoolean("MITM_ECH_GREASE", false),
             mitmECHConfigList = o.optString("MITM_ECH_CONFIG_LIST", ""),
             mitmECHForceQuery = o.optString("MITM_ECH_FORCE_QUERY", "best-effort"),
             fingerprint      = o.optString("FINGERPRINT", "unsafe"),
@@ -469,11 +468,38 @@ fun ConfigBuilderTab(vm: SnispfViewModel) {
                             }
                         )
                         BToggleRow(
-                            label    = "ECH GREASE (upstream)",
-                            sublabel = "Adds a GREASE Encrypted Client Hello extension to the upstream hello — matches current Chrome and probes censor ECH handling. Does NOT encrypt the SNI (no real client ECH yet)",
-                            checked  = bs.mitmECHGrease,
-                            onChange = { bs = bs.copy(mitmECHGrease = it); saved = false }
+                            label    = "ECH (real, upstream)",
+                            sublabel = "Encrypted Client Hello on the upstream TLS — the SNI travels encrypted (requires the target's ECH config via DNS or base64)",
+                            checked  = bs.mitmECHConfigList.isNotBlank(),
+                            onChange = { on ->
+                                bs = if (on && bs.mitmECHConfigList.isBlank())
+                                    bs.copy(mitmECHConfigList = "cloudflare.com+https://cloudflare-dns.com/dns-query")
+                                else if (!on)
+                                    bs.copy(mitmECHConfigList = "")
+                                else bs
+                                saved = false
+                            }
                         )
+                        if (bs.mitmECHConfigList.isNotBlank()) {
+                            BTextField("ECH Config List", bs.mitmECHConfigList, "cloudflare.com+https://cloudflare-dns.com/dns-query", KeyboardType.Ascii) {
+                                bs = bs.copy(mitmECHConfigList = it); saved = false
+                            }
+                            Text(
+                                "Formats: 'domain+https://doh-server', 'https://doh-server' (queries the SNI), 'udp://dns-ip', or a base64 ECHConfigList.",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                lineHeight = 16.sp,
+                            )
+                            BDropdown(
+                                label   = "ECH Force Query",
+                                value   = bs.mitmECHForceQuery,
+                                options = listOf(
+                                    "best-effort" to "best-effort — fall back to plain TLS if the ECH config cannot be fetched",
+                                    "full"        to "full — fail the connection when the config cannot be fetched (SNI never leaks)",
+                                ),
+                                onChange = { bs = bs.copy(mitmECHForceQuery = it); saved = false }
+                            )
+                        }
                         BTextField(
                             "ECH Config List (real ECH — overrides GREASE)",
                             bs.mitmECHConfigList,

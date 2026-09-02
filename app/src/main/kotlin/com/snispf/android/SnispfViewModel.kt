@@ -334,7 +334,6 @@ const val DEFAULT_CONFIG = """{
   "MITM_ALPN": ["h2", "http/1.1"],
   "MITM_USE_CLIENT_SNI": true,
   "MITM_RAW_INJECTION": false,
-  "MITM_ECH_GREASE": false,
   "MITM_ECH_CONFIG_LIST": "",
   "MITM_ECH_FORCE_QUERY": "best-effort",
   "FINGERPRINT": "unsafe",
